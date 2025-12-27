@@ -2,31 +2,57 @@ from src.data_loader import DataLoader
 from src.model import FPLModel
 from src.optimizer import Optimizer
 import pandas as pd
+import json
 import os
 
 def main():
     print("🚀 Güncelleme Başlatılıyor...")
     
-    # Adım 1: Veri Yükle
+    # 1. Veri Yükle
     loader = DataLoader()
+    
+    # DINAMIK GW BILGISI
+    gw_info = loader.get_next_gw()
+    print(f"📅 Hedef Hafta: {gw_info['name']} (GW{gw_info['id']})")
+    
     df_us, df_fpl, df_fixtures = loader.fetch_all_data()
     df_merged = loader.merge_data(df_us, df_fpl)
     df_fixtures = loader.process_fixtures(df_fixtures)
     
-    # Adım 2: Modelleme
+    # 2. Modelleme
     model = FPLModel()
-    df_predictions = model.train_and_predict(df_merged)
+    df_predictions, metrics, df_validation = model.train_and_predict(df_merged)
     
-    # Adım 3: Optimizasyon ve 5GW
+    # 3. Optimizasyon
     opt = Optimizer()
-    final_df = opt.calculate_5gw_projection(df_predictions, df_fixtures)
+    df_with_metrics = opt.calculate_metrics(df_predictions, df_fixtures)
     
-    # Adım 4: Kaydet
+    # 4. Kayıt Klasörü
     if not os.path.exists('data'):
         os.makedirs('data')
+    
+    # --- METADATA KAYDI (Siteye GW bilgisini aktarmak için) ---
+    with open('data/metadata.json', 'w') as f:
+        json.dump(gw_info, f)
         
-    final_df.to_csv('data/final_predictions.csv', index=False)
-    print("✅ BİTTİ! 'data/final_predictions.csv' kaydedildi.")
+    # A. Ana Veriler
+    df_with_metrics.to_csv('data/all_players.csv', index=False)
+    
+    # B. Model Test Verileri
+    df_validation.to_csv('data/model_validation.csv', index=False)
+    with open('data/model_metrics.json', 'w') as f:
+        json.dump(metrics, f)
+    
+    # C. Dream Teams (Genel İsimlendirme)
+    # Kısa Vade (Short Term) - Dinamik GW ismi yerine sabit dosya ismi kullanıyoruz ki app.py bozulmasın
+    dt_short = opt.solve_dream_team(df_with_metrics, target_metric='gw19_xP', budget=100.0)
+    dt_short.to_csv('data/dream_team_short.csv', index=False)
+    
+    # Uzun Vade (Long Term)
+    dt_long = opt.solve_dream_team(df_with_metrics, target_metric='long_term_xP', budget=100.0)
+    dt_long.to_csv('data/dream_team_long.csv', index=False)
+    
+    print(f"✅ BİTTİ! {gw_info['name']} verileri güncellendi.")
 
 if __name__ == "__main__":
     main()
