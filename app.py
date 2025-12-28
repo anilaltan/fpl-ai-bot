@@ -151,43 +151,30 @@ def main():
     # ========================================================================
     # AUTHENTICATION
     # ========================================================================
-    # Try the 'unrendered' mode first — in this version of
-    # streamlit-authenticator it returns the (name, status, username)
-    # tuple when available. If it returns None, render the widget
-    # and wait for the user to submit.
-    login_result = authenticator.login(location='unrendered')
+    # Render the login widget so the form is always visible to users.
+    login_result = authenticator.login(location='main')
 
-    if login_result is None:
-        # Render interactive widget for the user
-        _ = authenticator.login(location='main')
+    # If the library returned a tuple directly (some modes do), accept it.
+    if isinstance(login_result, (list, tuple)) and len(login_result) == 3:
+        name, authentication_status, username = login_result
+    else:
+        # Otherwise, inspect session_state which streamlit-authenticator
+        # sets on submission. This is the most compatible approach across
+        # versions: render the widget and then rely on session state.
+        status = st.session_state.get('authentication_status', None)
+        name_val = st.session_state.get('name') or st.session_state.get('display_name') or ''
+        username_val = st.session_state.get('username') or st.session_state.get('name') or ''
 
-        # If the widget was submitted, many versions of streamlit-authenticator
-        # set `authentication_status` and `username` in `st.session_state`.
-        # Check those keys and proceed if present instead of always stopping.
-        auth_key = 'authentication_status'
-        if auth_key in st.session_state:
-            status = st.session_state.get('authentication_status')
-            # Extract name/username if available
-            name_val = st.session_state.get('name') or st.session_state.get('display_name') or ''
-            username_val = st.session_state.get('username') or ''
-
-            if status is True:
-                # Construct a login_result-like tuple so downstream logic proceeds
-                login_result = (name_val, True, username_val)
-            elif status is False:
-                st.error('❌ Username/password is incorrect')
-                st.stop()
-            else:
-                st.warning('👋 Please enter your username and password')
-                st.stop()
+        if status is True:
+            name, authentication_status, username = name_val, True, username_val
+        elif status is False:
+            st.error('❌ Username/password is incorrect')
+            st.stop()
         else:
-            st.warning('👋 Please log in using the form above (submit to continue).')
-
-            # Diagnostics to help when the form is submitted but the app
-            # still doesn't proceed. Show non-sensitive session state info.
+            st.warning('👋 Please enter your username and password')
+            # Show some safe debug info to help troubleshooting
             with st.expander('Debug info (safe):'):
                 try:
-                    st.write('login_result (raw):', repr(login_result))
                     keys = [k for k in st.session_state.keys() if 'auth' in k.lower() or 'login' in k.lower()]
                     values = {k: st.session_state.get(k) for k in keys}
                     st.write('session_state keys (auth related) and values:', values)
@@ -196,17 +183,6 @@ def main():
                     st.write('Could not collect debug info:', str(e))
 
             st.stop()
-
-    # If login_result is not the expected 3-tuple, show diagnostics
-    if not (isinstance(login_result, (list, tuple)) and len(login_result) == 3):
-        st.error('❌ Authentication returned an unexpected value (not a 3-tuple). Showing diagnostics below.')
-        try:
-            st.write({'type': str(type(login_result)), 'repr': repr(login_result)})
-        except Exception as e:
-            st.write('Failed to serialize login_result:', str(e))
-        st.stop()
-
-    name, authentication_status, username = login_result
 
     # Handle authentication states
     if authentication_status is False:
