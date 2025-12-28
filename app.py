@@ -168,16 +168,12 @@ def main():
         if auth_key in st.session_state:
             status = st.session_state.get('authentication_status')
             # Extract name/username if available
-            name = st.session_state.get('name') or st.session_state.get('display_name')
-            username = st.session_state.get('username')
+            name_val = st.session_state.get('name') or st.session_state.get('display_name') or ''
+            username_val = st.session_state.get('username') or ''
 
             if status is True:
-                authentication_status = True
-                # If name/username available, continue with them
-                if name:
-                    # set a local name variable used later
-                    pass
-                # allow app to continue using values from session_state
+                # Construct a login_result-like tuple so downstream logic proceeds
+                login_result = (name_val, True, username_val)
             elif status is False:
                 st.error('❌ Username/password is incorrect')
                 st.stop()
