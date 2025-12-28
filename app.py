@@ -86,43 +86,53 @@ except Exception as e:
 # ============================================================================
 @st.cache_data
 def load_files():
-    """Load all data files (CSV/JSON) - Original function preserved"""
+    """Load all data files (CSV/JSON) - non-fatal on missing files"""
     try:
-        # Load player data
+        # Load player data (required)
         all_players = pd.read_csv('data/all_players.csv')
-        
-        # Load dream teams
+    except FileNotFoundError:
+        # Return empty structures instead of stopping the app so UI can render gracefully
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}, {'current_gameweek': 'N/A', 'last_updated': 'N/A'}
+    # Optional/secondary files — tolerant reading
+    try:
         dt_short = pd.read_csv('data/dream_team_short.csv')
+    except Exception:
+        dt_short = pd.DataFrame()
+    try:
         dt_long = pd.read_csv('data/dream_team_long.csv')
-        
-        # Load validation data
+    except Exception:
+        dt_long = pd.DataFrame()
+    try:
         df_validation = pd.read_csv('data/model_validation.csv')
-        
-        # Load metrics
+    except Exception:
+        df_validation = pd.DataFrame()
+    try:
         with open('data/model_metrics.json', 'r') as f:
             metrics = json.load(f)
-        
-        # Load metadata
+    except Exception:
+        metrics = {}
+    try:
         with open('data/metadata.json', 'r') as f:
             meta = json.load(f)
-        
-        return all_players, dt_short, dt_long, df_validation, metrics, meta
-    
-    except FileNotFoundError as e:
-        st.error(f"❌ Data file not found: {e}")
-        st.warning("⚠️ Please run `python updater.py` first to generate data files.")
-        st.stop()
-    except Exception as e:
-        st.error(f"❌ Error loading data: {e}")
-        st.stop()
+    except Exception:
+        meta = {'current_gameweek': 'N/A', 'last_updated': 'N/A'}
+    return all_players, dt_short, dt_long, df_validation, metrics, meta
 
 # ============================================================================
 # HELPER FUNCTIONS FOR AUTHENTICATION
 # ============================================================================
 def get_user_role(username):
-    """Get the role of the logged-in user"""
+    """Get the role of the logged-in user (supports 'roles' list or 'role' string)"""
     try:
-        return config['credentials'].get('usernames', {}).get(username, {}).get('role', 'free')
+        user_entry = config.get('credentials', {}).get('usernames', {}).get(username, {})
+        roles = user_entry.get('roles')
+        if isinstance(roles, list):
+            if 'admin' in roles:
+                return 'admin'
+            if 'premium' in roles:
+                return 'premium'
+        # fallback to 'role' string
+        return user_entry.get('role', 'free')
     except Exception:
         return 'free'
 
