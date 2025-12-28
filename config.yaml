@@ -9,13 +9,13 @@ credentials:
     premium_user:
       email: premium@example.com
       name: Premium User
-      password: $2b$12$qZx.7L0YQZ5qJx.7L0YQZ5IJx.7L0YQZ5qJx.7L0YQZ5qJx.7L0YQZ  # Password: premium123
+      password: $2b$12$WH0KrnWFWOewnG38adqpkey6LYvDeRxDJGqmXg4FZJI0xoPxQa.66 # Password: premium123
       role: premium  # Access to all features including Transfer Wizard and Model Lab
     
     testuser:
       email: test@example.com
       name: Test User
-      password: $2b$12$7L0YQZ5qJx.7L0YQZ5qJxL0YQZ5qJx.7L0YQZ5qJx.7L0YQZ5qJx.7  # Password: test123
+      password: $2b$12$O9mu24e1m/RxlheycJNOE.LPBwUnjhAVEl8qGYLVW2CkojMo.4RcW # Password: test123
       role: free  # Limited access - no Transfer Wizard or Model Lab
 
 cookie:
