@@ -113,7 +113,7 @@ def main():
     # ========================================================================
     # AUTHENTICATION
     # ========================================================================
-    name, authentication_status, username = authenticator.login('Login', 'main')
+    name, authentication_status, username = authenticator.login(location='main')
     
     # Handle authentication states
     if authentication_status == False:
@@ -147,7 +147,7 @@ def main():
             st.divider()
             
             # Logout button
-            authenticator.logout('Logout', 'sidebar')
+            authenticator.logout(location='sidebar')
             
             st.divider()
             
