@@ -133,6 +133,9 @@ def render_player_card(player, show_comparison=False):
     """Render a beautiful player card with stats"""
     position_class = f"pos-{player.get('position', 'MID')}"
     
+    # Handle both column naming conventions
+    expected_points = player.get('final_5gw_xP', player.get('gw19_xP', player.get('long_term_xP', 0)))
+    
     card_html = f"""
     <div class="player-card">
         <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -142,7 +145,7 @@ def render_player_card(player, show_comparison=False):
                 <span class="position-badge {position_class}">{player.get('position', 'N/A')}</span>
             </div>
             <div style="text-align: right;">
-                <h2 style="margin: 0; color: #667eea;">⭐ {player.get('final_5gw_xP', 0):.1f}</h2>
+                <h2 style="margin: 0; color: #667eea;">⭐ {expected_points:.1f}</h2>
                 <p style="margin: 5px 0; color: #666; font-weight: 600;">£{player.get('price', 0):.1f}m</p>
             </div>
         </div>
@@ -466,11 +469,11 @@ def main():
                                         
                                         st.markdown("<br>", unsafe_allow_html=True)
                                         
-                                        # Team table with enhanced styling
+                                        # Team table with enhanced styling - FIX: Sort BEFORE renaming
                                         with st.expander("📋 View Full Squad", expanded=True):
                                             display_team = my_team[['web_name', 'team_name', 'position', 'price', 'final_5gw_xP']].copy()
-                                            display_team.columns = ['Player', 'Club', 'Position', 'Price (£m)', '5GW Expected Points']
                                             display_team = display_team.sort_values('final_5gw_xP', ascending=False)
+                                            display_team.columns = ['Player', 'Club', 'Position', 'Price (£m)', '5GW Expected Points']
                                             st.dataframe(
                                                 display_team,
                                                 use_container_width=True,
@@ -536,11 +539,11 @@ def main():
                 # Pitch view
                 render_pitch_view(df_short)
                 
-                # Detailed table
+                # Detailed table - FIX: Sort BEFORE renaming
                 with st.expander("📊 Detailed Statistics"):
                     display_df = df_short[['position', 'web_name', 'team_name', 'price', 'gw19_xP']].copy()
+                    display_df = display_df.sort_values('gw19_xP', ascending=False)
                     display_df.columns = ['Position', 'Player', 'Club', 'Price (£m)', 'Expected Points']
-                    display_df = display_df.sort_values('Expected Points', ascending=False)
                     st.dataframe(display_df, use_container_width=True, hide_index=True)
             else:
                 st.info("📊 Short-term predictions are being generated. Check back soon!")
@@ -568,11 +571,11 @@ def main():
                     with cols[idx % 3]:
                         st.markdown(render_player_card(player), unsafe_allow_html=True)
                 
-                # Full table
+                # Full table - FIX: Sort BEFORE renaming
                 with st.expander("📊 Full Rankings"):
                     display_df = df_long[['position', 'web_name', 'team_name', 'price', 'long_term_xP']].copy()
+                    display_df = display_df.sort_values('long_term_xP', ascending=False)
                     display_df.columns = ['Position', 'Player', 'Club', 'Price (£m)', '5-Week Points']
-                    display_df = display_df.sort_values('5-Week Points', ascending=False)
                     st.dataframe(display_df, use_container_width=True, hide_index=True)
             else:
                 st.info("📊 Long-term projections are being calculated. Check back soon!")
@@ -616,9 +619,10 @@ def main():
                 
                 st.markdown(f"**Showing {len(filtered_df)} players**")
                 
+                # FIX: Sort BEFORE renaming
                 display_df = filtered_df[['web_name', 'team_name', 'position', 'price', 'final_5gw_xP']].copy()
+                display_df = display_df.sort_values('final_5gw_xP', ascending=False)
                 display_df.columns = ['Player', 'Club', 'Position', 'Price (£m)', '5GW Expected Points']
-                display_df = display_df.sort_values('5GW Expected Points', ascending=False)
                 
                 st.dataframe(
                     display_df,
