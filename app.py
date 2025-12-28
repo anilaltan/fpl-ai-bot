@@ -161,21 +161,45 @@ def main():
         # Render interactive widget for the user
         _ = authenticator.login(location='main')
 
-        st.warning('👋 Please log in using the form above (submit to continue).')
+        # If the widget was submitted, many versions of streamlit-authenticator
+        # set `authentication_status` and `username` in `st.session_state`.
+        # Check those keys and proceed if present instead of always stopping.
+        auth_key = 'authentication_status'
+        if auth_key in st.session_state:
+            status = st.session_state.get('authentication_status')
+            # Extract name/username if available
+            name = st.session_state.get('name') or st.session_state.get('display_name')
+            username = st.session_state.get('username')
 
-        # Diagnostics to help when the form is submitted but the app
-        # still doesn't proceed. Show non-sensitive session state info.
-        with st.expander('Debug info (safe):'):
-            try:
-                st.write('login_result (raw):', repr(login_result))
-                keys = [k for k in st.session_state.keys() if 'auth' in k.lower() or 'login' in k.lower()]
-                values = {k: st.session_state.get(k) for k in keys}
-                st.write('session_state keys (auth related) and values:', values)
-                st.info('Quick test credentials: username `admin`, password `admin123`')
-            except Exception as e:
-                st.write('Could not collect debug info:', str(e))
+            if status is True:
+                authentication_status = True
+                # If name/username available, continue with them
+                if name:
+                    # set a local name variable used later
+                    pass
+                # allow app to continue using values from session_state
+            elif status is False:
+                st.error('❌ Username/password is incorrect')
+                st.stop()
+            else:
+                st.warning('👋 Please enter your username and password')
+                st.stop()
+        else:
+            st.warning('👋 Please log in using the form above (submit to continue).')
 
-        st.stop()
+            # Diagnostics to help when the form is submitted but the app
+            # still doesn't proceed. Show non-sensitive session state info.
+            with st.expander('Debug info (safe):'):
+                try:
+                    st.write('login_result (raw):', repr(login_result))
+                    keys = [k for k in st.session_state.keys() if 'auth' in k.lower() or 'login' in k.lower()]
+                    values = {k: st.session_state.get(k) for k in keys}
+                    st.write('session_state keys (auth related) and values:', values)
+                    st.info('Quick test credentials: username `admin`, password `admin123`')
+                except Exception as e:
+                    st.write('Could not collect debug info:', str(e))
+
+            st.stop()
 
     # If login_result is not the expected 3-tuple, show diagnostics
     if not (isinstance(login_result, (list, tuple)) and len(login_result) == 3):
