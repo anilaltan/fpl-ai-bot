@@ -38,13 +38,48 @@ def load_auth_config():
 # Load config
 config = load_auth_config()
 
-# Create authenticator
-authenticator = stauth.Authenticate(
-    config['credentials'],
-    config['cookie']['name'],
-    config['cookie']['key'],
-    config['cookie']['expiry_days']
-)
+
+# Create authenticator with defensive diagnostics
+def _mask(s: str, keep: int = 4):
+    if not isinstance(s, str):
+        return str(type(s))
+    if len(s) <= keep:
+        return '*' * len(s)
+    return s[:keep] + '...' 
+
+try:
+    creds = config.get('credentials')
+    cookie_cfg = config.get('cookie', {})
+
+    if not creds or 'usernames' not in creds:
+        st.error('❌ config.yaml missing `credentials.usernames`.')
+        st.stop()
+
+    # Show a minimal, non-sensitive summary for troubleshooting
+    st.debug = getattr(st, 'debug', lambda *a, **k: None)
+    st.debug('Auth config usernames:', list(creds.get('usernames', {}).keys()))
+
+    authenticator = stauth.Authenticate(
+        creds,
+        cookie_cfg.get('name'),
+        cookie_cfg.get('key'),
+        cookie_cfg.get('expiry_days')
+    )
+except Exception as e:
+    st.error('❌ Failed to initialize authenticator. See diagnostics below.')
+    st.exception(e)
+    # Helpful config summary (non-sensitive)
+    try:
+        usernames = list(config.get('credentials', {}).get('usernames', {}).keys())
+        cookie_name = config.get('cookie', {}).get('name', 'N/A')
+        cookie_key = _mask(config.get('cookie', {}).get('key', ''))
+        expiry = config.get('cookie', {}).get('expiry_days', 'N/A')
+
+        st.info('Config summary:')
+        st.write({'usernames': usernames, 'cookie_name': cookie_name, 'cookie_key': cookie_key, 'expiry_days': expiry})
+    except Exception:
+        pass
+    st.stop()
 
 # ============================================================================
 # DATA LOADING (EXISTING FUNCTION - PRESERVED)
