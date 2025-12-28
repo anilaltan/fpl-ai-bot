@@ -86,7 +86,10 @@ def load_files():
 # ============================================================================
 def get_user_role(username):
     """Get the role of the logged-in user"""
-    return config['credentials']['usernames'][username].get('role', 'free')
+    try:
+        return config['credentials'].get('usernames', {}).get(username, {}).get('role', 'free')
+    except Exception:
+        return 'free'
 
 def is_premium_user(username):
     """Check if user has premium access"""
@@ -113,14 +116,20 @@ def main():
     # ========================================================================
     # AUTHENTICATION
     # ========================================================================
-    name, authentication_status, username = authenticator.login(location='main')
-    
+    login_result = authenticator.login(location='main')
+
+    if login_result is None:
+        st.error('❌ Authentication failed: login returned no data. Check config.yaml and streamlit_authenticator settings.')
+        st.stop()
+
+    name, authentication_status, username = login_result
+
     # Handle authentication states
-    if authentication_status == False:
+    if authentication_status is False:
         st.error('❌ Username/password is incorrect')
         st.stop()
-    
-    if authentication_status == None:
+
+    if authentication_status is None:
         st.warning('👋 Please enter your username and password')
         st.stop()
     
