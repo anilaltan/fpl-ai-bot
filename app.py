@@ -158,6 +158,21 @@ def main():
         # will return a tuple only after form submission. Stop here
         # to wait for user interaction instead of treating this as an error.
         st.warning('👋 Please log in using the form above (submit to continue).')
+
+        # Helpful diagnostics for when the user says they submitted but
+        # the app does not continue. These are non-sensitive and meant
+        # to help debug session/cookie/runtime issues.
+        with st.expander('Debug info (safe):'):
+            try:
+                st.write('login_result (raw):', repr(login_result))
+                # Show relevant session_state keys that streamlit-authenticator may set
+                keys = [k for k in st.session_state.keys() if 'auth' in k.lower() or 'login' in k.lower()]
+                st.write('session_state keys (auth related):', keys)
+                # Show a quick test credential suggestion
+                st.info('Quick test credentials: username `admin`, password `admin123`')
+            except Exception as e:
+                st.write('Could not collect debug info:', str(e))
+
         st.stop()
 
     # If login_result is not the expected 3-tuple, show diagnostics
