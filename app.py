@@ -154,7 +154,10 @@ def main():
     login_result = authenticator.login(location='main')
 
     if login_result is None:
-        st.error('❌ Authentication failed: login returned no data. Check config.yaml and streamlit_authenticator settings.')
+        # The login widget was rendered by streamlit-authenticator and
+        # will return a tuple only after form submission. Stop here
+        # to wait for user interaction instead of treating this as an error.
+        st.warning('👋 Please log in using the form above (submit to continue).')
         st.stop()
 
     # If login_result is not the expected 3-tuple, show diagnostics
