@@ -157,6 +157,15 @@ def main():
         st.error('❌ Authentication failed: login returned no data. Check config.yaml and streamlit_authenticator settings.')
         st.stop()
 
+    # If login_result is not the expected 3-tuple, show diagnostics
+    if not (isinstance(login_result, (list, tuple)) and len(login_result) == 3):
+        st.error('❌ Authentication returned an unexpected value (not a 3-tuple). Showing diagnostics below.')
+        try:
+            st.write({'type': str(type(login_result)), 'repr': repr(login_result)})
+        except Exception as e:
+            st.write('Failed to serialize login_result:', str(e))
+        st.stop()
+
     name, authentication_status, username = login_result
 
     # Handle authentication states
