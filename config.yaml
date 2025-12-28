@@ -3,7 +3,7 @@ credentials:
     admin:
       email: admin@fplaibot.com
       name: Admin User
-      password: $2b$12$KIX/rJ3GzGqZ5rJx.7L0Iu.O8YQ5vJxZ3L0YQZ5qJx.7L0YQZ5qJx  # Password: admin123
+      password: $2b$12$V6S4pXIVEZWDQFH6Dy80uOvYh04IQnaAXScQgxL2djg0WeFrxj4Na # Password: admin123
       role: admin  # Full access to everything
     
     premium_user:
