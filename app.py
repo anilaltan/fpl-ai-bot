@@ -151,24 +151,26 @@ def main():
     # ========================================================================
     # AUTHENTICATION
     # ========================================================================
-    login_result = authenticator.login(location='main')
+    # Try the 'unrendered' mode first — in this version of
+    # streamlit-authenticator it returns the (name, status, username)
+    # tuple when available. If it returns None, render the widget
+    # and wait for the user to submit.
+    login_result = authenticator.login(location='unrendered')
 
     if login_result is None:
-        # The login widget was rendered by streamlit-authenticator and
-        # will return a tuple only after form submission. Stop here
-        # to wait for user interaction instead of treating this as an error.
+        # Render interactive widget for the user
+        _ = authenticator.login(location='main')
+
         st.warning('👋 Please log in using the form above (submit to continue).')
 
-        # Helpful diagnostics for when the user says they submitted but
-        # the app does not continue. These are non-sensitive and meant
-        # to help debug session/cookie/runtime issues.
+        # Diagnostics to help when the form is submitted but the app
+        # still doesn't proceed. Show non-sensitive session state info.
         with st.expander('Debug info (safe):'):
             try:
                 st.write('login_result (raw):', repr(login_result))
-                # Show relevant session_state keys that streamlit-authenticator may set
                 keys = [k for k in st.session_state.keys() if 'auth' in k.lower() or 'login' in k.lower()]
-                st.write('session_state keys (auth related):', keys)
-                # Show a quick test credential suggestion
+                values = {k: st.session_state.get(k) for k in keys}
+                st.write('session_state keys (auth related) and values:', values)
                 st.info('Quick test credentials: username `admin`, password `admin123`')
             except Exception as e:
                 st.write('Could not collect debug info:', str(e))
