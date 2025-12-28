@@ -96,7 +96,7 @@ def load_files():
         dt_long = pd.read_csv('data/dream_team_long.csv')
         
         # Load validation data
-        df_validation = pd.read_csv('data/validation_results.csv')
+        df_validation = pd.read_csv('data/model_validation.csv')
         
         # Load metrics
         with open('data/model_metrics.json', 'r') as f:
