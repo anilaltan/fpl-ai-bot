@@ -1,0 +1,45 @@
+credentials:
+  usernames:
+    admin:
+      email: admin@fplaibot.com
+      name: Admin User
+      password: $2b$12$KIX/rJ3GzGqZ5rJx.7L0Iu.O8YQ5vJxZ3L0YQZ5qJx.7L0YQZ5qJx  # Password: admin123
+      role: admin  # Full access to everything
+    
+    premium_user:
+      email: premium@example.com
+      name: Premium User
+      password: $2b$12$qZx.7L0YQZ5qJx.7L0YQZ5IJx.7L0YQZ5qJx.7L0YQZ5qJx.7L0YQZ  # Password: premium123
+      role: premium  # Access to all features including Transfer Wizard and Model Lab
+    
+    testuser:
+      email: test@example.com
+      name: Test User
+      password: $2b$12$7L0YQZ5qJx.7L0YQZ5qJxL0YQZ5qJx.7L0YQZ5qJx.7L0YQZ5qJx.7  # Password: test123
+      role: free  # Limited access - no Transfer Wizard or Model Lab
+
+cookie:
+  expiry_days: 30
+  key: fpl_ai_bot_secret_key_change_this  # IMPORTANT: Change this to a random string for production
+  name: fpl_ai_bot_cookie
+
+# NOTES:
+# ------
+# 1. The passwords above are hashed using bcrypt
+# 2. To generate new hashed passwords, use the generate_password.py script
+# 3. Never commit real passwords to version control
+# 4. Change the cookie key to a random string before deploying
+#
+# USER ROLES:
+# -----------
+# - admin: Full access to everything (for you and trusted admins)
+# - premium: Paid users - access to Transfer Wizard, Model Lab, and all features
+# - free: Free tier users - access to GW Dream Team, Long Term Predictions, Player Pool only
+#
+# TO ADD NEW USERS:
+# -----------------
+# 1. Run: python generate_password.py
+# 2. Enter the desired password when prompted
+# 3. Copy the hashed password
+# 4. Add a new user entry under credentials.usernames following the format above
+# 5. Set their role to either 'free', 'premium', or 'admin'
