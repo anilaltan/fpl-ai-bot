@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import time
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -13,6 +15,31 @@ from src.data_loader import DataLoader
 from src.optimizer import Optimizer
 
 logger = logging.getLogger(__name__)
+
+# region agent log
+DEBUG_LOG_PATH = Path(__file__).parent / '.cursor' / 'debug.log'
+
+
+def agent_log(hypothesis_id: str, message: str, data: Dict[str, Any], *, run_id: str = "run1",
+              location: str = "app.py") -> None:
+    """Lightweight NDJSON logger for debug mode (writes to .cursor/debug.log)."""
+    payload = {
+        "sessionId": "debug-session",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as log_file:
+            log_file.write(json.dumps(payload) + "\n")
+    except Exception:
+        # Avoid breaking the app if debug logging fails
+        pass
+# endregion
 
 # ============================================================================
 # FUTURISTIC CUSTOM CSS - INSPIRED BY REFERENCE DESIGN
@@ -615,6 +642,23 @@ st.set_page_config(
     }
 )
 
+# region agent log
+agent_log(
+    "H1",
+    "server_config_snapshot",
+    {
+        "server_port": st.get_option("server.port"),
+        "server_address": st.get_option("server.address"),
+        "base_url_path": st.get_option("server.baseUrlPath"),
+        "browser_server_address": st.get_option("browser.serverAddress"),
+        "browser_server_port": st.get_option("browser.serverPort"),
+        "env_PORT": os.environ.get("PORT"),
+        "env_STREAMLIT_SERVER_PORT": os.environ.get("STREAMLIT_SERVER_PORT"),
+    },
+    location="app.py:page_config",
+)
+# endregion
+
 load_custom_css()
 
 # ============================================================================
@@ -706,6 +750,22 @@ def load_files() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame
 
 df_all, df_short, df_long, df_val, metrics, meta = load_files()
 
+# region agent log
+agent_log(
+    "H4",
+    "data_load_snapshot",
+    {
+        "df_all_rows": len(df_all.index),
+        "df_short_rows": len(df_short.index),
+        "df_long_rows": len(df_long.index),
+        "df_val_rows": len(df_val.index),
+        "metrics_keys": sorted(list(metrics.keys())) if isinstance(metrics, dict) else [],
+        "meta_keys": sorted(list(meta.keys())) if isinstance(meta, dict) else [],
+    },
+    location="app.py:data_load",
+)
+# endregion
+
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
@@ -748,6 +808,17 @@ def display_locked_feature(feature_name: str) -> None:
 # MAIN APPLICATION
 # ============================================================================
 def main() -> None:
+    # region agent log
+    agent_log(
+        "H2",
+        "main_entry",
+        {
+            "session_state_keys": sorted(list(st.session_state.keys())),
+            "query_params_present": bool(st.experimental_get_query_params()),
+        },
+        location="app.py:main_entry",
+    )
+    # endregion
     # --- LOGIN ---
     login_result = authenticator.login(location='main')
     
@@ -763,6 +834,19 @@ def main() -> None:
             authentication_status = False
         else:
             authentication_status = None
+
+    # region agent log
+    agent_log(
+        "H3",
+        "authentication_status_snapshot",
+        {
+            "authentication_status": authentication_status,
+            "session_has_auth_key": 'authentication_status' in st.session_state,
+            "session_has_username": 'username' in st.session_state,
+        },
+        location="app.py:auth",
+    )
+    # endregion
 
     if authentication_status is False:
         st.error('❌ Username or password is incorrect')
