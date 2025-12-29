@@ -89,6 +89,7 @@ data_loader:
   user_agent: "Mozilla/5.0"
   max_retries: 3
   retry_backoff_base: 2  # exponential backoff base (2^attempt)
+  request_timeout: 15   # seconds
 
 # ============================================================================
 # OPTIMIZER CONFIGURATION

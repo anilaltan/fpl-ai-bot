@@ -44,6 +44,7 @@ class DataLoader:
         self.understat_seasons: List[int] = [
             int(s) for s in cfg.get('understat_seasons', []) if str(s).isdigit()
         ]
+        self.request_timeout: int = int(cfg.get('request_timeout', 15))
     
     def _load_config(self, config_path: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -101,6 +102,7 @@ class DataLoader:
         last_exception: Optional[Exception] = None
         for attempt in range(self.max_retries):
             try:
+                kwargs.setdefault('timeout', self.request_timeout)
                 response = func(*args, **kwargs)
                 response.raise_for_status()
                 return response
