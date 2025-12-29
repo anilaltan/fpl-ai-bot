@@ -81,6 +81,9 @@ model:
 # ============================================================================
 data_loader:
   understat_url: "https://understat.com/getLeagueData/EPL/2025"
+  understat_seasons:
+    - 2025
+    - 2024
   fpl_url: "https://fantasy.premierleague.com/api/bootstrap-static/"
   fpl_fixtures_url: "https://fantasy.premierleague.com/api/fixtures/"
   user_agent: "Mozilla/5.0"

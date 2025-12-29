@@ -8,6 +8,7 @@ import logging
 import time
 import yaml
 from pathlib import Path
+from datetime import datetime
 
 # Logging yapılandırması
 logging.basicConfig(
@@ -40,6 +41,9 @@ class DataLoader:
         }
         self.max_retries: int = int(cfg.get('max_retries', 3))
         self.retry_backoff_base: int = int(cfg.get('retry_backoff_base', 2))
+        self.understat_seasons: List[int] = [
+            int(s) for s in cfg.get('understat_seasons', []) if str(s).isdigit()
+        ]
     
     def _load_config(self, config_path: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -56,6 +60,38 @@ class DataLoader:
         except yaml.YAMLError as exc:
             logger.error("Invalid YAML in config file: %s", exc)
             raise exc
+
+    def _get_understat_season_candidates(self, season: Optional[int] = None) -> List[int]:
+        """
+        Build a prioritized list of Understat seasons to try when fetching player data.
+        """
+        candidates: List[int] = []
+
+        if season:
+            candidates.append(int(season))
+
+        if getattr(self, "understat_seasons", None):
+            candidates.extend(self.understat_seasons)
+
+        try:
+            tail = str(self.understat_url).rstrip('/').split('/')[-1]
+            if tail.isdigit():
+                candidates.append(int(tail))
+        except Exception:
+            # Derivation failure is non-critical; fall back to defaults
+            pass
+
+        current_year = datetime.utcnow().year
+        candidates.extend([current_year, current_year - 1])
+
+        # Deduplicate while preserving order
+        uniq: List[int] = []
+        seen = set()
+        for c in candidates:
+            if c > 0 and c not in seen:
+                uniq.append(c)
+                seen.add(c)
+        return uniq
     
     def _retry_request(self, func: Callable[..., requests.Response], *args: Any, **kwargs: Any) -> requests.Response:
         """
@@ -393,33 +429,76 @@ class DataLoader:
         print(f"✅ {len(df_players)} oyuncu için fixture bilgileri eklendi.")
         
         return df_players
-
-    def fetch_player_match_history(self, player_id: int, season: int = 2025) -> List[Dict[str, Any]]:
+ 
+    def fetch_player_match_history(self, player_id: int, season: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Understat API'den oyuncu bazlı maç geçmişini çeker.
-        player_id: Understat oyuncu ID'si
-        season: Sezon yılı (varsayılan: 2025)
+        Sezon bilgisi dinamik olarak belirlenir ve mevcut değilse önceki sezonlara düşer.
         """
-        try:
-            player_api_url = f"https://understat.com/getPlayerData/?player_id={player_id}&season={season}"
-            r = self._retry_request(
-                requests.get, 
-                player_api_url,
-                headers={'X-Requested-With': 'XMLHttpRequest'}
-            )
-            
-            data = r.json()
-            # API'den gelen veri muhtemelen maç bazlı xG verilerini içerir
-            if isinstance(data, dict) and 'matches' in data:
-                return data['matches']
-            elif isinstance(data, list):
-                return data
-            else:
-                logger.warning(f"Oyuncu maç geçmişi formatı beklenmedik (player_id: {player_id})")
-                return []
-        except Exception as exc:
-            logger.debug(f"Oyuncu maç geçmişi çekilemedi (player_id: {player_id}): {str(exc)}")
-            return []
+        season_candidates = self._get_understat_season_candidates(season)
+        headers = {'X-Requested-With': 'XMLHttpRequest'}
+
+        for season_candidate in season_candidates:
+            player_api_url = f"https://understat.com/getPlayerData/?player_id={player_id}&season={season_candidate}"
+            last_exception: Optional[Exception] = None
+
+            for attempt in range(self.max_retries):
+                try:
+                    response = requests.get(player_api_url, headers=headers, timeout=15)
+
+                    if response.status_code == 404:
+                        logger.info(
+                            "Understat oyuncu verisi bulunamadı (id: %s, sezon: %s). Alternatif sezon deneniyor.",
+                            player_id,
+                            season_candidate
+                        )
+                        break  # Bir sonraki sezon adayına geç
+
+                    response.raise_for_status()
+                    data = response.json()
+
+                    if isinstance(data, dict) and 'matches' in data:
+                        return data['matches']
+                    if isinstance(data, list) and data:
+                        return data
+
+                    logger.debug(
+                        "Oyuncu maç geçmişi beklenen formatta değil (id: %s, sezon: %s). Sonraki sezona geçiliyor.",
+                        player_id,
+                        season_candidate
+                    )
+                    break  # Bu sezon için başka deneme yapma, sonraki sezona geç
+                except requests.exceptions.RequestException as exc:
+                    last_exception = exc
+                    if attempt < self.max_retries - 1:
+                        wait_time = self.retry_backoff_base ** attempt
+                        logger.debug(
+                            "Oyuncu verisi çekilemedi (id: %s, sezon: %s, deneme: %s/%s): %s",
+                            player_id,
+                            season_candidate,
+                            attempt + 1,
+                            self.max_retries,
+                            str(exc)
+                        )
+                        time.sleep(wait_time)
+                        continue
+                    logger.warning(
+                        "Oyuncu maç geçmişi çekilemedi (id: %s, sezon: %s). Hata: %s",
+                        player_id,
+                        season_candidate,
+                        str(exc)
+                    )
+
+            if last_exception is None:
+                # 404 veya beklenmedik format nedeniyle sonraki sezon denenecek
+                continue
+
+        logger.debug(
+            "Oyuncu maç geçmişi bulunamadı (player_id: %s, sezon adayları: %s)",
+            player_id,
+            season_candidates
+        )
+        return []
     
     def calculate_form_momentum(self, df_merged: pd.DataFrame) -> pd.DataFrame:
         """
