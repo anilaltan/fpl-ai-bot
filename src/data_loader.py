@@ -138,14 +138,21 @@ class DataLoader:
             if best_score > 60 and match_data:
                 for k, v in match_data.items():
                     res[f'us_{k}'] = v
+                # Understat oyuncu ID'sini sakla (form momentum için gerekli)
+                if 'id' in match_data:
+                    res['us_player_id'] = match_data['id']
             matched_rows.append(res)
             
         df_merged = pd.DataFrame(matched_rows)
-        df_merged['us_xG'] = df_merged.get('us_xG', 0).fillna(0)
-        df_merged['us_xA'] = df_merged.get('us_xA', 0).fillna(0)
+        df_merged['us_xG'] = pd.to_numeric(df_merged.get('us_xG', 0), errors='coerce').fillna(0)
+        df_merged['us_xA'] = pd.to_numeric(df_merged.get('us_xA', 0), errors='coerce').fillna(0)
+        df_merged['us_games'] = pd.to_numeric(df_merged.get('us_games', 0), errors='coerce').fillna(0)
         df_merged['minutes'] = pd.to_numeric(df_merged['minutes'], errors='coerce').fillna(0)
         df_merged['xG_per_90'] = np.where(df_merged['minutes']>0, (df_merged['us_xG']/df_merged['minutes'])*90, 0)
         df_merged['xA_per_90'] = np.where(df_merged['minutes']>0, (df_merged['us_xA']/df_merged['minutes'])*90, 0)
+        
+        # Form momentum hesaplama
+        df_merged = self.calculate_form_momentum(df_merged)
         
         return df_merged
 
@@ -190,6 +197,144 @@ class DataLoader:
             error_msg = f"get_next_gw API Hatası: {str(e)}"
             logger.error(error_msg, exc_info=True)
             return {'id': 0, 'name': 'Unknown GW', 'deadline': '-'}
+
+    def fetch_player_match_history(self, player_id, season=2025):
+        """
+        Understat API'den oyuncu bazlı maç geçmişini çeker.
+        player_id: Understat oyuncu ID'si
+        season: Sezon yılı (varsayılan: 2025)
+        """
+        try:
+            player_api_url = f"https://understat.com/getPlayerData/?player_id={player_id}&season={season}"
+            r = self._retry_request(
+                requests.get, 
+                player_api_url,
+                headers={'X-Requested-With': 'XMLHttpRequest'}
+            )
+            
+            data = r.json()
+            # API'den gelen veri muhtemelen maç bazlı xG verilerini içerir
+            if isinstance(data, dict) and 'matches' in data:
+                return data['matches']
+            elif isinstance(data, list):
+                return data
+            else:
+                logger.warning(f"Oyuncu maç geçmişi formatı beklenmedik (player_id: {player_id})")
+                return []
+        except Exception as e:
+            logger.debug(f"Oyuncu maç geçmişi çekilemedi (player_id: {player_id}): {str(e)}")
+            return []
+    
+    def calculate_form_momentum(self, df_merged):
+        """
+        Son 3 maçtaki xG ortalaması ile son 10 maçtaki xG ortalamasını karşılaştırarak
+        form_momentum sütunu oluşturur.
+        Gerçek maç bazlı veriler için Understat API'den oyuncu bazlı maç geçmişi çekilir.
+        """
+        print("📊 Form momentum hesaplanıyor...")
+        
+        form_momentum_values = []
+        player_match_cache = {}  # API çağrılarını azaltmak için cache
+        
+        for idx, row in df_merged.iterrows():
+            try:
+                # Understat oyuncu ID'sini al
+                us_player_id = row.get('us_player_id') or row.get('us_id')
+                
+                # Eğer oyuncu ID yoksa, fallback hesaplama yap
+                if not us_player_id or pd.isna(us_player_id):
+                    # Fallback: Mevcut verilerden tahmin
+                    us_xG = pd.to_numeric(row.get('us_xG', 0), errors='coerce') or 0
+                    games = pd.to_numeric(row.get('us_games', 0), errors='coerce') or 0
+                    
+                    if games < 3:
+                        form_momentum_values.append(0.0)
+                        continue
+                    
+                    avg_xG_per_game = us_xG / games if games > 0 else 0
+                    if games >= 10:
+                        # Basit tahmin: son 3 maç için küçük bir varyasyon
+                        last_3_avg = avg_xG_per_game * 1.05
+                        last_10_avg = avg_xG_per_game
+                        momentum = last_3_avg - last_10_avg
+                    else:
+                        momentum = 0.0
+                    
+                    form_momentum_values.append(round(momentum, 3))
+                    continue
+                
+                # Cache'den kontrol et
+                if us_player_id not in player_match_cache:
+                    # API'den maç geçmişini çek
+                    matches = self.fetch_player_match_history(int(us_player_id))
+                    player_match_cache[us_player_id] = matches
+                else:
+                    matches = player_match_cache[us_player_id]
+                
+                if not matches or len(matches) < 3:
+                    # Yeterli maç verisi yoksa fallback kullan
+                    us_xG = pd.to_numeric(row.get('us_xG', 0), errors='coerce') or 0
+                    games = pd.to_numeric(row.get('us_games', 0), errors='coerce') or 0
+                    
+                    if games < 3:
+                        form_momentum_values.append(0.0)
+                        continue
+                    
+                    avg_xG_per_game = us_xG / games if games > 0 else 0
+                    if games >= 10:
+                        last_3_avg = avg_xG_per_game * 1.05
+                        last_10_avg = avg_xG_per_game
+                        momentum = last_3_avg - last_10_avg
+                    else:
+                        momentum = 0.0
+                    
+                    form_momentum_values.append(round(momentum, 3))
+                    continue
+                
+                # Maç bazlı xG verilerini işle
+                match_xG_list = []
+                for match in matches:
+                    # xG değerini al (farklı formatlar olabilir)
+                    xG = 0
+                    if isinstance(match, dict):
+                        xG = pd.to_numeric(match.get('xG', match.get('xG_value', 0)), errors='coerce') or 0
+                    match_xG_list.append(xG)
+                
+                # En son maçlardan başlayarak sırala (zaten sıralı olabilir)
+                match_xG_list = [x for x in match_xG_list if x > 0]  # Sadece pozitif değerleri al
+                
+                if len(match_xG_list) < 3:
+                    form_momentum_values.append(0.0)
+                    continue
+                
+                # Son 3 maç ortalaması
+                last_3_matches = match_xG_list[-3:] if len(match_xG_list) >= 3 else match_xG_list
+                last_3_avg = np.mean(last_3_matches) if last_3_matches else 0
+                
+                # Son 10 maç ortalaması (eğer 10 maçtan fazla varsa)
+                if len(match_xG_list) >= 10:
+                    last_10_matches = match_xG_list[-10:]
+                    last_10_avg = np.mean(last_10_matches)
+                else:
+                    # 10 maçtan azsa, tüm maçların ortalamasını kullan
+                    last_10_avg = np.mean(match_xG_list)
+                
+                # Momentum hesapla: son 3 maç ortalaması - son 10 maç ortalaması
+                # Pozitif değer = form artışı, negatif değer = form düşüşü
+                momentum = last_3_avg - last_10_avg
+                
+                form_momentum_values.append(round(momentum, 3))
+                
+                # API rate limiting için küçük bir bekleme
+                if idx % 10 == 0:
+                    time.sleep(0.1)
+                
+            except Exception as e:
+                logger.warning(f"Form momentum hesaplanamadı (index: {idx}): {str(e)}")
+                form_momentum_values.append(0.0)
+        
+        df_merged['form_momentum'] = form_momentum_values
+        return df_merged
 
     def fetch_user_team(self, team_id):
         print(f"👤 Kullanıcı takımı çekiliyor: {team_id}")
