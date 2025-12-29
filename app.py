@@ -1,13 +1,18 @@
+import json
+import logging
+from pathlib import Path
+from typing import Any, Dict, Tuple
+
+import pandas as pd
 import streamlit as st
 import streamlit_authenticator as stauth
 import yaml
 from yaml.loader import SafeLoader
-import pandas as pd
-import json
-from pathlib import Path
-from typing import Any, Dict, Tuple
+
 from src.data_loader import DataLoader
 from src.optimizer import Optimizer
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # FUTURISTIC CUSTOM CSS - INSPIRED BY REFERENCE DESIGN
@@ -642,25 +647,61 @@ except Exception as e:
 # ============================================================================
 # DATA LOADING
 # ============================================================================
+DATA_DIR = Path(__file__).parent / 'data'
+REQUIRED_DATA_FILES = [
+    'all_players.csv',
+    'dream_team_short.csv',
+    'dream_team_long.csv',
+    'model_validation.csv',
+    'model_metrics.json',
+    'metadata.json'
+]
+
+def ensure_data_files() -> Tuple[bool, str]:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    missing = [f for f in REQUIRED_DATA_FILES if not (DATA_DIR / f).exists()]
+    
+    if missing:
+        try:
+            from updater import main as refresh_data
+            refresh_data(data_dir=DATA_DIR)
+        except Exception as exc:
+            logger.error("Automatic data refresh failed: %s", str(exc), exc_info=True)
+            return False, str(exc)
+    
+    remaining = [f for f in REQUIRED_DATA_FILES if not (DATA_DIR / f).exists()]
+    if remaining:
+        return False, f"Missing files after refresh: {', '.join(remaining)}"
+    
+    return True, ""
+
 @st.cache_data
 def load_files() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, Any], Dict[str, Any]]:
+    ready, error_msg = ensure_data_files()
+    if not ready:
+        st.error("❌ Veri dosyaları bulunamadı ve otomatik güncelleme başarısız oldu. Lütfen sunucuda `python updater.py` komutunu çalıştırın.")
+        logger.error("Data files missing: %s", error_msg)
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}, {'name': 'GW?', 'id': 0, 'deadline': '-'}
+    
     try:
-        all_players = pd.read_csv('data/all_players.csv')
+        all_players = pd.read_csv(DATA_DIR / 'all_players.csv')
         
-        try: dt_short = pd.read_csv('data/dream_team_short.csv')
+        try: dt_short = pd.read_csv(DATA_DIR / 'dream_team_short.csv')
         except: dt_short = pd.DataFrame()
         
-        try: dt_long = pd.read_csv('data/dream_team_long.csv')
+        try: dt_long = pd.read_csv(DATA_DIR / 'dream_team_long.csv')
         except: dt_long = pd.DataFrame()
         
-        try: df_validation = pd.read_csv('data/model_validation.csv')
+        try: df_validation = pd.read_csv(DATA_DIR / 'model_validation.csv')
         except: df_validation = pd.DataFrame()
         
-        with open('data/model_metrics.json', 'r') as f: metrics = json.load(f)
-        with open('data/metadata.json', 'r') as f: meta = json.load(f)
+        with open(DATA_DIR / 'model_metrics.json', 'r') as f: metrics = json.load(f)
+        with open(DATA_DIR / 'metadata.json', 'r') as f: meta = json.load(f)
         
         return all_players, dt_short, dt_long, df_validation, metrics, meta
-    except Exception as e:
+    except Exception as exc:
+        logger.error("Data load failed: %s", str(exc), exc_info=True)
+        st.error("❌ Veri dosyaları yüklenemedi. Lütfen tekrar deneyin veya `python updater.py` çalıştırın.")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}, {'name': 'GW?', 'id': 0, 'deadline': '-'}
 
 df_all, df_short, df_long, df_val, metrics, meta = load_files()
