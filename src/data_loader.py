@@ -3,18 +3,69 @@ import requests
 import numpy as np
 import ast
 import difflib
+import logging
+import time
+
+# Logging yapılandırması
+logging.basicConfig(
+    level=logging.ERROR,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('error.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 class DataLoader:
     def __init__(self):
         self.understat_url = "https://understat.com/getLeagueData/EPL/2025"
         self.fpl_url = "https://fantasy.premierleague.com/api/bootstrap-static/"
         self.headers = {'User-Agent': 'Mozilla/5.0'}
+        self.max_retries = 3
+    
+    def _retry_request(self, func, *args, **kwargs):
+        """
+        Exponential backoff ile API isteği yapar.
+        3 kez deneme yapar: 1s, 2s, 4s bekleme süreleri ile.
+        """
+        last_exception = None
+        for attempt in range(self.max_retries):
+            try:
+                response = func(*args, **kwargs)
+                response.raise_for_status()
+                return response
+            except requests.exceptions.RequestException as e:
+                last_exception = e
+                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                if attempt < self.max_retries - 1:
+                    logger.warning(
+                        f"API isteği başarısız (Deneme {attempt + 1}/{self.max_retries}). "
+                        f"{wait_time} saniye bekleniyor... Hata: {str(e)}"
+                    )
+                    time.sleep(wait_time)
+                else:
+                    logger.error(
+                        f"API isteği {self.max_retries} denemeden sonra başarısız oldu. "
+                        f"Son hata: {str(e)}"
+                    )
+            except Exception as e:
+                last_exception = e
+                logger.error(f"Beklenmeyen hata: {str(e)}")
+                if attempt < self.max_retries - 1:
+                    wait_time = 2 ** attempt
+                    time.sleep(wait_time)
+        
+        raise last_exception
 
     def fetch_all_data(self):
         print("🌍 Veriler çekiliyor...")
         try:
-            r_us = requests.get(self.understat_url, headers={'X-Requested-With': 'XMLHttpRequest'})
-            r_us.raise_for_status()
+            r_us = self._retry_request(
+                requests.get, 
+                self.understat_url, 
+                headers={'X-Requested-With': 'XMLHttpRequest'}
+            )
             data_us = r_us.json()
             df_understat = pd.DataFrame(data_us['players'])
             df_fixtures = pd.DataFrame(data_us['dates'])
@@ -24,12 +75,13 @@ class DataLoader:
                 if c in df_understat.columns:
                     df_understat[c] = pd.to_numeric(df_understat[c], errors='coerce')
         except Exception as e:
-            print(f"❌ Understat Hatası: {e}")
+            error_msg = f"Understat API Hatası: {str(e)}"
+            print(f"❌ {error_msg}")
+            logger.error(error_msg, exc_info=True)
             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
         try:
-            r_fpl = requests.get(self.fpl_url)
-            r_fpl.raise_for_status()
+            r_fpl = self._retry_request(requests.get, self.fpl_url)
             data_fpl = r_fpl.json()
             df_fpl = pd.DataFrame(data_fpl['elements'])
             
@@ -41,7 +93,9 @@ class DataLoader:
             df_fpl['price'] = df_fpl['now_cost'] / 10.0
             
         except Exception as e:
-            print(f"❌ FPL Hatası: {e}")
+            error_msg = f"FPL API Hatası: {str(e)}"
+            print(f"❌ {error_msg}")
+            logger.error(error_msg, exc_info=True)
             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         
         return df_understat, df_fpl, df_fixtures
@@ -122,7 +176,7 @@ class DataLoader:
     def get_next_gw(self):
         """Sıradaki Gameweek bilgisini çeker"""
         try:
-            r = requests.get(self.fpl_url)
+            r = self._retry_request(requests.get, self.fpl_url)
             data = r.json()
             next_event = next((e for e in data['events'] if e['is_next']), None)
             if next_event:
@@ -132,13 +186,15 @@ class DataLoader:
                     'deadline': next_event['deadline_time']
                 }
             return {'id': 0, 'name': 'Unknown GW', 'deadline': '-'}
-        except:
+        except Exception as e:
+            error_msg = f"get_next_gw API Hatası: {str(e)}"
+            logger.error(error_msg, exc_info=True)
             return {'id': 0, 'name': 'Unknown GW', 'deadline': '-'}
 
     def fetch_user_team(self, team_id):
         print(f"👤 Kullanıcı takımı çekiliyor: {team_id}")
         try:
-            r_static = requests.get(self.fpl_url)
+            r_static = self._retry_request(requests.get, self.fpl_url)
             data_static = r_static.json()
             current_gw_obj = next((x for x in data_static['events'] if x.get('is_current', False)), None)
             if not current_gw_obj:
@@ -148,14 +204,14 @@ class DataLoader:
             
             gw_id = current_gw_obj['id']
             picks_url = f"https://fantasy.premierleague.com/api/entry/{team_id}/event/{gw_id}/picks/"
-            r_picks = requests.get(picks_url)
-            if r_picks.status_code != 200:
-                return None, 0
+            r_picks = self._retry_request(requests.get, picks_url)
             
             data_picks = r_picks.json()
             player_ids = [p['element'] for p in data_picks['picks']]
             bank = data_picks['entry_history']['bank'] / 10.0
             return player_ids, bank
         except Exception as e:
-            print(f"❌ API Hatası: {e}")
+            error_msg = f"fetch_user_team API Hatası (team_id: {team_id}): {str(e)}"
+            print(f"❌ {error_msg}")
+            logger.error(error_msg, exc_info=True)
             return None, 0
