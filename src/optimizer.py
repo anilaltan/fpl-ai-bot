@@ -6,6 +6,7 @@ fixture difficulty ratings, and optimizing squad selection for Fantasy Premier L
 """
 
 import logging
+import ast
 from typing import Dict, List, Tuple, Optional
 import pandas as pd
 import numpy as np
@@ -237,6 +238,46 @@ class Optimizer:
         except Exception as e:
             logger.error(f"Error calculating base projection: {e}", exc_info=True)
             raise
+
+    # -------------------- Risk Management -------------------- #
+    def calculate_minutes_risk(self, df_players: pd.DataFrame) -> pd.Series:
+        """
+        Son 5 maçtaki oynanan dakikaların varyansını hesaplar.
+        Dakika listesi bulunamazsa 0 döner (risk yok sayılır).
+        """
+        candidate_cols = [
+            'recent_minutes', 'minutes_history', 'minutes_last_five',
+            'past_minutes', 'gw_minutes'
+        ]
+
+        def _safe_list(val):
+            if isinstance(val, list):
+                return val
+            if isinstance(val, str):
+                try:
+                    parsed = ast.literal_eval(val)
+                    if isinstance(parsed, list):
+                        return parsed
+                except Exception:
+                    return None
+            return None
+
+        risks: List[float] = []
+        for _, row in df_players.iterrows():
+            minutes_list = []
+            for col in candidate_cols:
+                if col in row.index and pd.notna(row[col]):
+                    lst = _safe_list(row[col])
+                    if lst:
+                        minutes_list = [float(x) for x in lst if pd.notna(x)]
+                        break
+            if minutes_list:
+                last5 = minutes_list[-5:] if len(minutes_list) >= 5 else minutes_list
+                risks.append(float(np.var(last5)) if len(last5) >= 2 else 0.0)
+            else:
+                risks.append(0.0)
+
+        return pd.Series(risks, index=df_players.index, name='minutes_risk')
     
     def calculate_metrics(
         self, 
@@ -275,6 +316,23 @@ class Optimizer:
             
             # Step 4: Calculate base projection
             df = self.calculate_base_projection(df)
+
+            # Step 4.1: Risk yönetimi (dakika varyansı)
+            df['minutes_risk'] = self.calculate_minutes_risk(df)
+            risk_threshold = 400.0  # ~20 dk std -> 400 var
+            risk_coefficient = 0.85
+            risk_teams = {'Man City', 'Chelsea'}
+
+            def _risk_factor(row):
+                factor = 1.0
+                if row['minutes_risk'] > risk_threshold:
+                    factor *= risk_coefficient
+                    if row['team_name'] in risk_teams:
+                        factor *= 0.9  # %10 ek ceza
+                return factor
+
+            df['risk_factor'] = df.apply(_risk_factor, axis=1)
+            df['base_xP'] = df['base_xP'] * df['risk_factor']
             
             # Step 5: Calculate short-term projection (GW19)
             short_term_weeks = self.config['optimizer']['short_term_weeks']
