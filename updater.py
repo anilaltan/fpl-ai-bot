@@ -4,16 +4,19 @@ from src.optimizer import Optimizer
 import pandas as pd
 import json
 import os
+import logging
 
-def main():
-    print("🚀 Güncelleme Başlatılıyor...")
+logger = logging.getLogger(__name__)
+
+def main() -> None:
+    logger.info("🚀 Güncelleme Başlatılıyor...")
     
     # 1. Veri Yükle
     loader = DataLoader()
     
     # DINAMIK GW BILGISI
     gw_info = loader.get_next_gw()
-    print(f"📅 Hedef Hafta: {gw_info['name']} (GW{gw_info['id']})")
+    logger.info("📅 Hedef Hafta: %s (GW%s)", gw_info['name'], gw_info['id'])
     
     df_us, df_fpl, df_fixtures = loader.fetch_all_data()
     df_merged = loader.merge_data(df_us, df_fpl)
@@ -55,7 +58,7 @@ def main():
     dt_long = opt.solve_dream_team(df_with_metrics, target_metric='long_term_xP', budget=100.0)
     dt_long.to_csv('data/dream_team_long.csv', index=False)
     
-    print(f"✅ BİTTİ! {gw_info['name']} verileri güncellendi.")
+    logger.info("✅ BİTTİ! %s verileri güncellendi.", gw_info['name'])
 
 if __name__ == "__main__":
     main()

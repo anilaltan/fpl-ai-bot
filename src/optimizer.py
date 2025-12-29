@@ -7,7 +7,7 @@ fixture difficulty ratings, and optimizing squad selection for Fantasy Premier L
 
 import logging
 import ast
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 import pandas as pd
 import numpy as np
 import yaml
@@ -34,8 +34,13 @@ class Optimizer:
         """
         self.config = self._load_config(config_path)
         self.team_name_mapping = self.config['optimizer']['team_name_mapping']
+        rotation_cfg = self.config['optimizer'].get('rotation_risk', {})
+        self.risk_threshold: float = float(rotation_cfg.get('minutes_var_threshold', 400.0))
+        self.risk_coefficient: float = float(rotation_cfg.get('risk_coefficient', 0.85))
+        self.team_penalty_multiplier: float = float(rotation_cfg.get('team_penalty_multiplier', 0.9))
+        self.risk_teams = set(rotation_cfg.get('risk_teams', []))
     
-    def _load_config(self, config_path: Optional[str] = None) -> Dict:
+    def _load_config(self, config_path: Optional[str] = None) -> Dict[str, Any]:
         """
         Load configuration from YAML file.
         
@@ -319,16 +324,13 @@ class Optimizer:
 
             # Step 4.1: Risk yönetimi (dakika varyansı)
             df['minutes_risk'] = self.calculate_minutes_risk(df)
-            risk_threshold = 400.0  # ~20 dk std -> 400 var
-            risk_coefficient = 0.85
-            risk_teams = {'Man City', 'Chelsea'}
 
-            def _risk_factor(row):
+            def _risk_factor(row: pd.Series) -> float:
                 factor = 1.0
-                if row['minutes_risk'] > risk_threshold:
-                    factor *= risk_coefficient
-                    if row['team_name'] in risk_teams:
-                        factor *= 0.9  # %10 ek ceza
+                if row['minutes_risk'] > self.risk_threshold:
+                    factor *= self.risk_coefficient
+                    if row['team_name'] in self.risk_teams:
+                        factor *= self.team_penalty_multiplier
                 return factor
 
             df['risk_factor'] = df.apply(_risk_factor, axis=1)
@@ -549,7 +551,7 @@ class Optimizer:
         current_team_df: pd.DataFrame, 
         all_players_df: pd.DataFrame, 
         bank_balance: float
-    ) -> Optional[Dict]:
+    ) -> Optional[Dict[str, Any]]:
         """
         Suggest the best transfer by comparing current team with available players.
         

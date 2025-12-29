@@ -5,13 +5,14 @@ from yaml.loader import SafeLoader
 import pandas as pd
 import json
 from pathlib import Path
+from typing import Any, Dict, Tuple
 from src.data_loader import DataLoader
 from src.optimizer import Optimizer
 
 # ============================================================================
 # FUTURISTIC CUSTOM CSS - INSPIRED BY REFERENCE DESIGN
 # ============================================================================
-def load_custom_css():
+def load_custom_css() -> None:
     st.markdown("""
     <style>
     /* Import Google Fonts */
@@ -459,7 +460,7 @@ def load_custom_css():
 # ============================================================================
 # HELPER FUNCTIONS FOR UI COMPONENTS
 # ============================================================================
-def render_player_card(player, show_comparison=False):
+def render_player_card(player: pd.Series, show_comparison: bool = False) -> str:
     """Render a futuristic player card with neon glow"""
     position_class = f"pos-{player.get('position', 'MID')}"
     
@@ -482,7 +483,7 @@ def render_player_card(player, show_comparison=False):
     """
     return card_html
 
-def render_transfer_comparison(out_player, in_player, gain):
+def render_transfer_comparison(out_player: pd.Series, in_player: pd.Series, gain: float) -> None:
     """Render transfer comparison with neon-styled cards"""
     col1, col2, col3 = st.columns([5, 1, 5])
     
@@ -543,7 +544,7 @@ def render_transfer_comparison(out_player, in_player, gain):
     </div>
     """, unsafe_allow_html=True)
 
-def render_pitch_view(df_team):
+def render_pitch_view(df_team: pd.DataFrame) -> None:
     """Render team in a futuristic 3D pitch formation"""
     st.markdown("""
     <div class="pitch-container">
@@ -582,7 +583,7 @@ def render_pitch_view(df_team):
     
     st.markdown("</div>", unsafe_allow_html=True)
 
-def render_metric_card(label, value, delta=None, delta_color="normal"):
+def render_metric_card(label: str, value: Any, delta: Any = None, delta_color: str = "normal") -> None:
     """Render a futuristic metric card with glassmorphism"""
     delta_html = ""
     if delta:
@@ -615,7 +616,7 @@ load_custom_css()
 # AUTHENTICATION
 # ============================================================================
 @st.cache_resource
-def load_auth_config():
+def load_auth_config() -> Dict[str, Any]:
     """Load config.yaml file"""
     config_path = Path(__file__).parent / 'config.yaml'
     if not config_path.exists():
@@ -642,7 +643,7 @@ except Exception as e:
 # DATA LOADING
 # ============================================================================
 @st.cache_data
-def load_files():
+def load_files() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, Any], Dict[str, Any]]:
     try:
         all_players = pd.read_csv('data/all_players.csv')
         
@@ -667,7 +668,7 @@ df_all, df_short, df_long, df_val, metrics, meta = load_files()
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
-def get_user_role(username):
+def get_user_role(username: str) -> str:
     try:
         user_data = config['credentials']['usernames'].get(username, {})
         roles = user_data.get('roles', [])
@@ -677,11 +678,11 @@ def get_user_role(username):
     except:
         return 'free'
 
-def is_premium_user(username):
+def is_premium_user(username: str) -> bool:
     role = get_user_role(username)
     return role in ['premium', 'admin']
 
-def display_locked_feature(feature_name):
+def display_locked_feature(feature_name: str) -> None:
     st.markdown(f"""
     <div class="locked-feature">
         <div style="font-size: 64px; margin-bottom: 20px;">🔒</div>
@@ -705,7 +706,7 @@ def display_locked_feature(feature_name):
 # ============================================================================
 # MAIN APPLICATION
 # ============================================================================
-def main():
+def main() -> None:
     # --- LOGIN ---
     login_result = authenticator.login(location='main')
     

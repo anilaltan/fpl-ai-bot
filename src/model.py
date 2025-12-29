@@ -7,7 +7,7 @@ Fantasy Premier League player points using segmented XGBoost regressors.
 
 import logging
 import ast
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 import pandas as pd
 import numpy as np
 import yaml
@@ -89,7 +89,7 @@ class FPLModel:
         self.def_model = None
         self.off_model = None
     
-    def _load_config(self, config_path: Optional[str] = None) -> Dict:
+    def _load_config(self, config_path: Optional[str] = None) -> Dict[str, Any]:
         """
         Load configuration from YAML file.
         
@@ -269,7 +269,7 @@ class FPLModel:
         volatility = volatility if pd.notna(volatility) else 0.0
         return mean_points + alpha * volatility
     
-    def train_and_predict(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict, pd.DataFrame]:
+    def train_and_predict(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any], pd.DataFrame]:
         """
         İki segmentli (Defansif: GK+DEF, Ofansif: MID+FWD) XGBoost modelleri ile
         eğitim/prediction akışı. Ayrıca volatility_index ve upside_potential özelliklerini ekler.

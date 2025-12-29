@@ -77,6 +77,17 @@ model:
     - 'pos_MID'
 
 # ============================================================================
+# DATA LOADER CONFIGURATION
+# ============================================================================
+data_loader:
+  understat_url: "https://understat.com/getLeagueData/EPL/2025"
+  fpl_url: "https://fantasy.premierleague.com/api/bootstrap-static/"
+  fpl_fixtures_url: "https://fantasy.premierleague.com/api/fixtures/"
+  user_agent: "Mozilla/5.0"
+  max_retries: 3
+  retry_backoff_base: 2  # exponential backoff base (2^attempt)
+
+# ============================================================================
 # OPTIMIZER CONFIGURATION
 # ============================================================================
 optimizer:
@@ -109,6 +120,15 @@ optimizer:
   
   # Optimization algorithm
   max_iterations: 1000  # Maximum iterations for budget optimization
+
+  # Rotation / Minutes Risk Management
+  rotation_risk:
+    minutes_var_threshold: 400.0   # variance threshold to apply risk
+    risk_coefficient: 0.85         # multiplier when risk is high
+    team_penalty_multiplier: 0.9   # additional multiplier for risky teams
+    risk_teams:
+      - "Man City"
+      - "Chelsea"
   
   # Team name mapping (FPL to Understat)
   team_name_mapping:
