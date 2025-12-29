@@ -30,7 +30,14 @@ class DataLoader:
         self.understat_url: str = cfg.get('understat_url')
         self.fpl_url: str = cfg.get('fpl_url')
         self.fpl_fixtures_url: str = cfg.get('fpl_fixtures_url')
-        self.headers: Dict[str, str] = {'User-Agent': cfg.get('user_agent', 'Mozilla/5.0')}
+        user_agent = cfg.get('user_agent', 'Mozilla/5.0')
+        self.headers: Dict[str, str] = {
+            'User-Agent': user_agent,
+            'Accept': 'application/json,text/plain,*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Origin': 'https://fantasy.premierleague.com',
+            'Referer': 'https://fantasy.premierleague.com/'
+        }
         self.max_retries: int = int(cfg.get('max_retries', 3))
         self.retry_backoff_base: int = int(cfg.get('retry_backoff_base', 2))
     
@@ -527,24 +534,78 @@ class DataLoader:
 
     def fetch_user_team(self, team_id: str) -> Tuple[Optional[List[int]], float]:
         logger.info("👤 Kullanıcı takımı çekiliyor: %s", team_id)
+        clean_team_id = str(team_id).strip()
+        if not clean_team_id.isdigit():
+            logger.error("Geçersiz takım ID formatı: %s", team_id)
+            return None, 0.0
+
         try:
-            r_static = self._retry_request(requests.get, self.fpl_url, headers=self.headers)
+            r_static = self._retry_request(
+                requests.get,
+                self.fpl_url,
+                headers=self.headers,
+                timeout=15
+            )
             data_static = r_static.json()
-            current_gw_obj = next((x for x in data_static['events'] if x.get('is_current', False)), None)
+        except Exception as exc:
+            logger.error("bootstrap-static alınamadı: %s", str(exc), exc_info=True)
+            data_static = {}
+
+        try:
+            entry_url = f"https://fantasy.premierleague.com/api/entry/{clean_team_id}/"
+            r_entry = self._retry_request(
+                requests.get,
+                entry_url,
+                headers=self.headers,
+                timeout=15
+            )
+            entry_data = r_entry.json()
+        except Exception as exc:
+            error_msg = f"entry API Hatası (team_id: {clean_team_id}): {str(exc)}"
+            logger.error(error_msg, exc_info=True)
+            return None, 0.0
+
+        events = data_static.get('events', []) if isinstance(data_static, dict) else []
+        current_gw_obj = None
+        gw_id = entry_data.get('current_event') or entry_data.get('last_deadline_event')
+        if not gw_id and events:
+            current_gw_obj = next((x for x in events if x.get('is_current')), None)
             if not current_gw_obj:
-                current_gw_obj = next((x for x in reversed(data_static['events']) if x.get('finished', False)), None)
+                current_gw_obj = next((x for x in events if x.get('is_next')), None)
             if not current_gw_obj:
-                return None, 0
-            
-            gw_id = current_gw_obj['id']
-            picks_url = f"https://fantasy.premierleague.com/api/entry/{team_id}/event/{gw_id}/picks/"
-            r_picks = self._retry_request(requests.get, picks_url, headers=self.headers)
+                current_gw_obj = next((x for x in reversed(events) if x.get('finished') or x.get('is_previous')), None)
+            if current_gw_obj:
+                gw_id = current_gw_obj.get('id')
+
+        if not gw_id:
+            logger.error("Aktif gameweek belirlenemedi (team_id: %s)", clean_team_id)
+            return None, 0.0
+        
+        try:
+            picks_url = f"https://fantasy.premierleague.com/api/entry/{clean_team_id}/event/{gw_id}/picks/"
+            r_picks = self._retry_request(
+                requests.get,
+                picks_url,
+                headers=self.headers,
+                timeout=15
+            )
             
             data_picks = r_picks.json()
-            player_ids = [p['element'] for p in data_picks['picks']]
-            bank = data_picks['entry_history']['bank'] / 10.0
+            picks = data_picks.get('picks') or []
+            if not picks:
+                logger.error(
+                    "Picks listesi boş döndü (team_id: %s, gw: %s). Response: %s",
+                    clean_team_id,
+                    gw_id,
+                    data_picks
+                )
+                return None, 0.0
+
+            player_ids = [int(p['element']) for p in picks if 'element' in p]
+            bank_raw = (data_picks.get('entry_history') or {}).get('bank', 0)
+            bank = float(bank_raw) / 10.0 if bank_raw is not None else 0.0
             return player_ids, bank
         except Exception as exc:
-            error_msg = f"fetch_user_team API Hatası (team_id: {team_id}): {str(exc)}"
+            error_msg = f"fetch_user_team API Hatası (team_id: {clean_team_id}): {str(exc)}"
             logger.error(error_msg, exc_info=True)
-            return None, 0
+            return None, 0.0

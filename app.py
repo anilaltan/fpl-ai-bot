@@ -858,7 +858,7 @@ def main() -> None:
                 
                 col1, col2 = st.columns([3, 1])
                 with col1:
-                    user_id = st.text_input(
+                    user_id_input = st.text_input(
                         "FPL Team ID",
                         placeholder="Enter your FPL Team ID (e.g., 123456)",
                         label_visibility="collapsed"
@@ -866,89 +866,98 @@ def main() -> None:
                 with col2:
                     analyze_btn = st.button("🔍 ANALYZE", use_container_width=True)
                 
-                if user_id and analyze_btn:
-                    with st.spinner("🤖 AI is analyzing your team..."):
-                        loader = DataLoader()
-                        player_ids, bank = loader.fetch_user_team(user_id)
-                        
-                        if player_ids and not df_all.empty:
-                            if 'id' in df_all.columns:
-                                my_team = df_all[df_all['id'].isin(player_ids)].copy()
-                                if not my_team.empty:
-                                    st.success(f"✅ Team loaded successfully!")
-                                    
-                                    # Display bank
-                                    st.markdown("<div style='margin: 30px 0;'></div>", unsafe_allow_html=True)
-                                    col1, col2, col3 = st.columns(3)
-                                    with col1:
-                                        render_metric_card("TEAM VALUE", f"£{my_team['price'].sum():.1f}m")
-                                    with col2:
-                                        render_metric_card("BANK BALANCE", f"£{bank}m")
-                                    with col3:
-                                        render_metric_card("SQUAD SIZE", f"{len(my_team)}")
-                                    
-                                    st.markdown("<div style='margin: 40px 0;'></div>", unsafe_allow_html=True)
-                                    
-                                    # Team table
-                                    with st.expander("📋 VIEW FULL SQUAD", expanded=True):
-                                        display_team = my_team[['web_name', 'team_name', 'position', 'price', 'final_5gw_xP']].copy()
-                                        display_team = display_team.sort_values('final_5gw_xP', ascending=False)
-                                        display_team.columns = ['Player', 'Club', 'Position', 'Price (£m)', '5GW xPoints']
-                                        st.dataframe(
-                                            display_team,
-                                            use_container_width=True,
-                                            hide_index=True
-                                        )
-                                    
-                                    st.divider()
-                                    st.markdown("""
-                                    <h2 style="color: #00ff9f; font-family: 'Orbitron', sans-serif; 
-                                               text-align: center; margin: 40px 0; font-size: 28px;">
-                                        🤖 AI RECOMMENDATION
-                                    </h2>
-                                    """, unsafe_allow_html=True)
-                                    
-                                    opt = Optimizer()
-                                    suggestion = opt.suggest_transfer(my_team, df_all, bank)
-                                    
-                                    if suggestion:
-                                        render_transfer_comparison(
-                                            suggestion['out'],
-                                            suggestion['in'],
-                                            suggestion['gain']
-                                        )
-                                    else:
+                if analyze_btn:
+                    team_id = user_id_input.strip()
+                    
+                    if not team_id:
+                        st.error("❌ Please enter your FPL Team ID.")
+                    elif not team_id.isdigit():
+                        st.error("❌ Team ID should contain digits only.")
+                    elif df_all.empty:
+                        st.error("❌ Player database is empty. Please refresh data files.")
+                    else:
+                        with st.spinner("🤖 AI is analyzing your team..."):
+                            loader = DataLoader()
+                            player_ids, bank = loader.fetch_user_team(team_id)
+                            
+                            if player_ids and not df_all.empty:
+                                if 'id' in df_all.columns:
+                                    my_team = df_all[df_all['id'].isin(player_ids)].copy()
+                                    if not my_team.empty:
+                                        st.success(f"✅ Team loaded successfully!")
+                                        
+                                        # Display bank
+                                        st.markdown("<div style='margin: 30px 0;'></div>", unsafe_allow_html=True)
+                                        col1, col2, col3 = st.columns(3)
+                                        with col1:
+                                            render_metric_card("TEAM VALUE", f"£{my_team['price'].sum():.1f}m")
+                                        with col2:
+                                            render_metric_card("BANK BALANCE", f"£{bank}m")
+                                        with col3:
+                                            render_metric_card("SQUAD SIZE", f"{len(my_team)}")
+                                        
+                                        st.markdown("<div style='margin: 40px 0;'></div>", unsafe_allow_html=True)
+                                        
+                                        # Team table
+                                        with st.expander("📋 VIEW FULL SQUAD", expanded=True):
+                                            display_team = my_team[['web_name', 'team_name', 'position', 'price', 'final_5gw_xP']].copy()
+                                            display_team = display_team.sort_values('final_5gw_xP', ascending=False)
+                                            display_team.columns = ['Player', 'Club', 'Position', 'Price (£m)', '5GW xPoints']
+                                            st.dataframe(
+                                                display_team,
+                                                use_container_width=True,
+                                                hide_index=True
+                                            )
+                                        
+                                        st.divider()
                                         st.markdown("""
-                                        <div style="background: linear-gradient(135deg, rgba(0, 191, 255, 0.15) 0%, rgba(0, 255, 159, 0.15) 100%); 
-                                                    border: 2px solid rgba(0, 255, 159, 0.5);
-                                                    border-radius: 16px; padding: 40px; text-align: center;
-                                                    box-shadow: 0 8px 32px rgba(0, 255, 159, 0.2);">
-                                            <div style="font-size: 64px; margin-bottom: 20px;">✨</div>
-                                            <h3 style="margin: 0; color: #00ff9f; font-family: 'Orbitron', sans-serif; font-size: 28px;">
-                                                YOUR TEAM IS OPTIMIZED!
-                                            </h3>
-                                            <p style="margin: 16px 0 0 0; color: #cbd5e1; font-size: 16px;">
-                                                No better transfers found within your current budget.
-                                            </p>
-                                        </div>
+                                        <h2 style="color: #00ff9f; font-family: 'Orbitron', sans-serif; 
+                                                   text-align: center; margin: 40px 0; font-size: 28px;">
+                                            🤖 AI RECOMMENDATION
+                                        </h2>
                                         """, unsafe_allow_html=True)
+                                        
+                                        opt = Optimizer()
+                                        suggestion = opt.suggest_transfer(my_team, df_all, bank)
+                                        
+                                        if suggestion:
+                                            render_transfer_comparison(
+                                                suggestion['out'],
+                                                suggestion['in'],
+                                                suggestion['gain']
+                                            )
+                                        else:
+                                            st.markdown("""
+                                            <div style="background: linear-gradient(135deg, rgba(0, 191, 255, 0.15) 0%, rgba(0, 255, 159, 0.15) 100%); 
+                                                        border: 2px solid rgba(0, 255, 159, 0.5);
+                                                        border-radius: 16px; padding: 40px; text-align: center;
+                                                        box-shadow: 0 8px 32px rgba(0, 255, 159, 0.2);">
+                                                <div style="font-size: 64px; margin-bottom: 20px;">✨</div>
+                                                <h3 style="margin: 0; color: #00ff9f; font-family: 'Orbitron', sans-serif; font-size: 28px;">
+                                                    YOUR TEAM IS OPTIMIZED!
+                                                </h3>
+                                                <p style="margin: 16px 0 0 0; color: #cbd5e1; font-size: 16px;">
+                                                    No better transfers found within your current budget.
+                                                </p>
+                                            </div>
+                                            """, unsafe_allow_html=True)
+                                    else:
+                                        st.error("❌ Could not find team players in database")
                                 else:
-                                    st.error("❌ Could not find team players in database")
+                                    st.error("❌ Database schema error: missing 'id' column")
                             else:
-                                st.error("❌ Database schema error: missing 'id' column")
-                        else:
-                            st.markdown("""
-                            <div style="background: rgba(255, 59, 92, 0.1); border-radius: 12px; 
-                                        padding: 30px; border-left: 4px solid #ff3b5c;">
-                                <h4 style="margin: 0 0 12px 0; color: #ff3b5c; font-family: 'Orbitron', sans-serif;">
-                                    ❌ TEAM NOT FOUND
-                                </h4>
-                                <p style="margin: 0; color: #cbd5e1; line-height: 1.6;">
-                                    Please check your Team ID and try again. You can find your Team ID 
-                                    in the FPL website URL when viewing your team.
-                                </p>
-                            </div>
-                            """, unsafe_allow_html=True)
+                                st.markdown("""
+                                <div style="background: rgba(255, 59, 92, 0.1); border-radius: 12px; 
+                                            padding: 30px; border-left: 4px solid #ff3b5c;">
+                                    <h4 style="margin: 0 0 12px 0; color: #ff3b5c; font-family: 'Orbitron', sans-serif;">
+                                        ❌ TEAM NOT FOUND
+                                    </h4>
+                                    <p style="margin: 0; color: #cbd5e1; line-height: 1.6;">
+                                        Please check your Team ID and try again. You can find your Team ID 
+                                        in the FPL website URL when viewing your team.
+                                    </p>
+                                </div>
+                                """, unsafe_allow_html=True)
 
         # --- TAB 2: DREAM TEAM ---
         with tabs[1]:
