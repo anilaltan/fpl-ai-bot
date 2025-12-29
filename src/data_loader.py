@@ -10,6 +10,8 @@ import yaml
 from pathlib import Path
 from datetime import datetime
 
+from src.understat_adapter import UnderstatAdapter
+
 # Logging yapılandırması
 logging.basicConfig(
     level=logging.ERROR,
@@ -29,6 +31,7 @@ class DataLoader:
         self.config = self._load_config(config_path)
         cfg = self.config.get('data_loader', {})
         self.understat_url: str = cfg.get('understat_url')
+        self.understat_league: str = cfg.get('understat_league', 'EPL')
         self.fpl_url: str = cfg.get('fpl_url')
         self.fpl_fixtures_url: str = cfg.get('fpl_fixtures_url')
         user_agent = cfg.get('user_agent', 'Mozilla/5.0')
@@ -135,28 +138,60 @@ class DataLoader:
             raise last_exception
         raise RuntimeError("Retry loop exited without response or exception.")
 
+    def _fetch_understat_players(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Understat verisini içeri adapte edilmiş lightweight client ile çeker.
+        Önce JSON endpoint, sonra HTML fallback. İlk başarılı sezonda durur.
+        """
+        adapter = UnderstatAdapter(
+            max_retries=self.max_retries,
+            backoff_base=self.retry_backoff_base,
+            timeout=self.request_timeout,
+            user_agent=self.headers.get('User-Agent', 'Mozilla/5.0')
+        )
+
+        seasons = self._get_understat_season_candidates()
+
+        for season_candidate in seasons:
+            players, fixtures = adapter.fetch_league(self.understat_league, season_candidate)
+            if players:
+                df_players = pd.DataFrame(players)
+                df_players['season'] = season_candidate
+                df_fixtures = pd.DataFrame(fixtures)
+                logger.info("Understat verisi çekildi (sezon: %s)", season_candidate)
+                return df_players, df_fixtures
+
+        return pd.DataFrame(), pd.DataFrame()
+
     def fetch_all_data(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Understat ve FPL statik verilerini çeker.
         """
         logger.info("🌍 Veriler çekiliyor...")
-        try:
-            r_us = self._retry_request(
-                requests.get, 
-                self.understat_url, 
-                headers={'X-Requested-With': 'XMLHttpRequest'}
-            )
-            data_us = r_us.json()
-            df_understat = pd.DataFrame(data_us.get('players', []))
-            df_fixtures = pd.DataFrame(data_us.get('dates', []))
-            
+
+        # Önce adapte edilmiş client ile dene, sonra legacy endpoint'e düş
+        df_understat, df_fixtures = self._fetch_understat_players()
+
+        if df_understat.empty:
+            try:
+                r_us = self._retry_request(
+                    requests.get,
+                    self.understat_url,
+                    headers={'X-Requested-With': 'XMLHttpRequest'}
+                )
+                data_us = r_us.json()
+                df_understat = pd.DataFrame(data_us.get('players', []))
+                df_fixtures = pd.DataFrame(data_us.get('dates', []))
+            except Exception as exc:
+                logger.error("Understat API Hatası: %s", str(exc), exc_info=True)
+                return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+        # Numerik kolonları normalize et
+        if not df_understat.empty:
             cols = ['games', 'time', 'goals', 'xG', 'xA', 'shots', 'key_passes', 'xGChain', 'xGBuildup']
             for c in cols:
                 if c in df_understat.columns:
                     df_understat[c] = pd.to_numeric(df_understat[c], errors='coerce')
-        except Exception as exc:
-            logger.error("Understat API Hatası: %s", str(exc), exc_info=True)
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
         try:
             r_fpl = self._retry_request(requests.get, self.fpl_url, headers=self.headers)

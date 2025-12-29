@@ -81,6 +81,7 @@ model:
 # ============================================================================
 data_loader:
   understat_url: "https://understat.com/getLeagueData/EPL/2025"
+  understat_league: "EPL"
   understat_seasons:
     - 2025
     - 2024
