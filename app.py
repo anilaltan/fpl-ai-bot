@@ -705,15 +705,57 @@ def ensure_data_files() -> Tuple[bool, str]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     missing = [f for f in REQUIRED_DATA_FILES if not (DATA_DIR / f).exists()]
     
+    # region agent log
+    agent_log(
+        "H7",
+        "ensure_data_files_entry",
+        {
+            "missing_initial": missing,
+            "data_dir": str(DATA_DIR),
+        },
+        location="app.py:ensure_data_files:entry",
+    )
+    # endregion
+
     if missing:
         try:
             from updater import main as refresh_data
+            # region agent log
+            agent_log(
+                "H8",
+                "ensure_data_files_trigger_refresh",
+                {
+                    "missing_before_refresh": missing,
+                },
+                location="app.py:ensure_data_files:refresh_start",
+            )
+            # endregion
             refresh_data(data_dir=DATA_DIR)
+            # region agent log
+            agent_log(
+                "H8",
+                "ensure_data_files_refresh_completed",
+                {
+                    "missing_before_refresh": missing,
+                },
+                location="app.py:ensure_data_files:refresh_end",
+            )
+            # endregion
         except Exception as exc:
             logger.error("Automatic data refresh failed: %s", str(exc), exc_info=True)
             return False, str(exc)
     
     remaining = [f for f in REQUIRED_DATA_FILES if not (DATA_DIR / f).exists()]
+    # region agent log
+    agent_log(
+        "H10",
+        "ensure_data_files_remaining",
+        {
+            "remaining_after_refresh": remaining,
+        },
+        location="app.py:ensure_data_files:remaining",
+    )
+    # endregion
     if remaining:
         return False, f"Missing files after refresh: {', '.join(remaining)}"
     
@@ -721,13 +763,46 @@ def ensure_data_files() -> Tuple[bool, str]:
 
 @st.cache_data
 def load_files() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, Any], Dict[str, Any]]:
+    # region agent log
+    agent_log(
+        "H5",
+        "load_files_entry",
+        {
+            "data_dir": str(DATA_DIR),
+            "required_files": REQUIRED_DATA_FILES,
+        },
+        location="app.py:load_files:entry",
+    )
+    # endregion
+
     ready, error_msg = ensure_data_files()
+    # region agent log
+    agent_log(
+        "H6",
+        "ensure_data_files_result",
+        {
+            "ready": ready,
+            "error_msg": error_msg,
+        },
+        location="app.py:load_files:ensure_result",
+    )
+    # endregion
     if not ready:
         st.error("❌ Veri dosyaları bulunamadı ve otomatik güncelleme başarısız oldu. Lütfen sunucuda `python updater.py` komutunu çalıştırın.")
         logger.error("Data files missing: %s", error_msg)
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}, {'name': 'GW?', 'id': 0, 'deadline': '-'}
     
     try:
+        # region agent log
+        agent_log(
+            "H6",
+            "load_files_read_start",
+            {
+                "data_dir": str(DATA_DIR),
+            },
+            location="app.py:load_files:read_start",
+        )
+        # endregion
         all_players = pd.read_csv(DATA_DIR / 'all_players.csv')
         
         try: dt_short = pd.read_csv(DATA_DIR / 'dream_team_short.csv')
@@ -742,6 +817,21 @@ def load_files() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame
         with open(DATA_DIR / 'model_metrics.json', 'r') as f: metrics = json.load(f)
         with open(DATA_DIR / 'metadata.json', 'r') as f: meta = json.load(f)
         
+        # region agent log
+        agent_log(
+            "H6",
+            "load_files_read_success",
+            {
+                "all_players_rows": len(all_players.index) if isinstance(all_players, pd.DataFrame) else None,
+                "dt_short_rows": len(dt_short.index) if isinstance(dt_short, pd.DataFrame) else None,
+                "dt_long_rows": len(dt_long.index) if isinstance(dt_long, pd.DataFrame) else None,
+                "df_validation_rows": len(df_validation.index) if isinstance(df_validation, pd.DataFrame) else None,
+                "metrics_keys": list(metrics.keys()) if isinstance(metrics, dict) else None,
+                "meta_keys": list(meta.keys()) if isinstance(meta, dict) else None,
+            },
+            location="app.py:load_files:read_success",
+        )
+        # endregion
         return all_players, dt_short, dt_long, df_validation, metrics, meta
     except Exception as exc:
         logger.error("Data load failed: %s", str(exc), exc_info=True)
