@@ -137,8 +137,13 @@ class FPLModel:
             if feature not in df_encoded.columns:
                 df_encoded[feature] = 0
         
-        # Fill missing values with 0
-        df_encoded[self.features] = df_encoded[self.features].fillna(0)
+        # Fill missing values with 0 and force numeric dtype
+        df_encoded[self.features] = (
+            df_encoded[self.features]
+            .apply(pd.to_numeric, errors='coerce')
+            .fillna(0)
+            .astype(float)
+        )
         
         return df_encoded
     
