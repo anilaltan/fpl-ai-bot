@@ -858,7 +858,11 @@ def main() -> None:
                 
                 col1, col2 = st.columns([3, 1])
                 with col1:
-                    user_id = st.text_input("", placeholder="Enter your FPL Team ID (e.g., 123456)", label_visibility="collapsed")
+                    user_id = st.text_input(
+                        "FPL Team ID",
+                        placeholder="Enter your FPL Team ID (e.g., 123456)",
+                        label_visibility="collapsed"
+                    )
                 with col2:
                     analyze_btn = st.button("🔍 ANALYZE", use_container_width=True)
                 
