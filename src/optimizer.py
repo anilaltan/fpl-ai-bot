@@ -1,188 +1,574 @@
+"""
+FPL Optimizer Module
+
+This module contains the Optimizer class responsible for calculating player metrics,
+fixture difficulty ratings, and optimizing squad selection for Fantasy Premier League.
+"""
+
+import logging
+from typing import Dict, List, Tuple, Optional
 import pandas as pd
 import numpy as np
+import yaml
+from pathlib import Path
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
 
 class Optimizer:
-    def calculate_metrics(self, df_players, df_fixtures):
-        print("📅 5 Haftalık projeksiyon hesaplanıyor...")
+    """
+    FPL squad optimizer for calculating player projections and building optimal teams.
+    
+    This class handles fixture difficulty calculations, player metric calculations,
+    and squad optimization following SOLID principles.
+    """
+    
+    def __init__(self, config_path: Optional[str] = None) -> None:
+        """
+        Initialize the optimizer with configuration.
         
-        # 1. Takım Savunma Gücü (xGA)
-        played = df_fixtures[df_fixtures['isResult'] == True]
-        team_xga = {}
-        all_teams = set(played['home_team'].dropna().unique()) | set(played['away_team'].dropna().unique())
+        Args:
+            config_path: Optional path to config.yaml file. If None, uses default path.
+        """
+        self.config = self._load_config(config_path)
+        self.team_name_mapping = self.config['optimizer']['team_name_mapping']
+    
+    def _load_config(self, config_path: Optional[str] = None) -> Dict:
+        """
+        Load configuration from YAML file.
         
-        for t in all_teams:
-            if not isinstance(t, str): continue
-            home = played[played['home_team'] == t]
-            away = played[played['away_team'] == t]
-            total_xga = home['xG_a'].sum() + away['xG_h'].sum()
-            matches = len(home) + len(away)
-            team_xga[t] = total_xga / matches if matches > 0 else 1.5
+        Args:
+            config_path: Optional path to config file.
             
-        avg_xga = np.mean(list(team_xga.values())) if team_xga else 1.5
-        fdr_map = {t: x/avg_xga for t, x in team_xga.items()}
+        Returns:
+            Dictionary containing optimizer configuration.
+            
+        Raises:
+            FileNotFoundError: If config file cannot be found.
+            yaml.YAMLError: If config file is invalid YAML.
+        """
+        if config_path is None:
+            config_path = Path(__file__).parent.parent / 'config.yaml'
         
-        # 2. Takım Eşleştirme
-        fpl_to_us = {
-            'Man Utd': 'Manchester United', 'Man City': 'Manchester City', 'Spurs': 'Tottenham',
-            'Newcastle': 'Newcastle United', 'Wolves': 'Wolverhampton Wanderers', 
-            "Nott'm Forest": 'Nottingham Forest', 'Sheffield Utd': 'Sheffield United', 'Luton': 'Luton Town'
-        }
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+            return config
+        except FileNotFoundError:
+            logger.error(f"Config file not found: {config_path}")
+            raise
+        except yaml.YAMLError as e:
+            logger.error(f"Invalid YAML in config file: {e}")
+            raise
+    
+    def calculate_team_defensive_strength(
+        self, 
+        df_fixtures: pd.DataFrame
+    ) -> Dict[str, float]:
+        """
+        Calculate defensive strength (xGA) for each team.
         
-        # 3. Fikstür Zorluğu
-        def get_strength(team_name, weeks=5):
-            mapped = fpl_to_us.get(team_name, team_name)
+        Args:
+            df_fixtures: DataFrame containing fixture data with xG information.
+            
+        Returns:
+            Dictionary mapping team names to their average xGA per match.
+        """
+        try:
+            played = df_fixtures[df_fixtures['isResult'] == True].copy()
+            
+            if played.empty:
+                logger.warning("No played fixtures found for defensive strength calculation")
+                return {}
+            
+            team_xga: Dict[str, float] = {}
+            all_teams = (
+                set(played['home_team'].dropna().unique()) | 
+                set(played['away_team'].dropna().unique())
+            )
+            
+            default_xga = self.config['optimizer']['default_team_xga']
+            
+            for team in all_teams:
+                if not isinstance(team, str):
+                    continue
+                
+                home_matches = played[played['home_team'] == team]
+                away_matches = played[played['away_team'] == team]
+                
+                total_xga = (
+                    home_matches['xG_a'].sum() + 
+                    away_matches['xG_h'].sum()
+                )
+                matches = len(home_matches) + len(away_matches)
+                
+                team_xga[team] = (
+                    total_xga / matches if matches > 0 else default_xga
+                )
+            
+            logger.info(f"Calculated defensive strength for {len(team_xga)} teams")
+            return team_xga
+            
+        except Exception as e:
+            logger.error(
+                f"Error calculating team defensive strength: {e}",
+                exc_info=True
+            )
+            return {}
+    
+    def calculate_fdr_map(
+        self, 
+        team_xga: Dict[str, float]
+    ) -> Dict[str, float]:
+        """
+        Calculate Fixture Difficulty Rating (FDR) map from team xGA.
+        
+        Args:
+            team_xga: Dictionary mapping team names to average xGA.
+            
+        Returns:
+            Dictionary mapping team names to FDR multipliers.
+        """
+        try:
+            if not team_xga:
+                return {}
+            
+            avg_xga = np.mean(list(team_xga.values()))
+            fdr_map = {team: xga / avg_xga for team, xga in team_xga.items()}
+            
+            return fdr_map
+            
+        except Exception as e:
+            logger.error(f"Error calculating FDR map: {e}", exc_info=True)
+            return {}
+    
+    def map_team_name(self, team_name: str) -> str:
+        """
+        Map FPL team name to Understat team name.
+        
+        Args:
+            team_name: FPL team name.
+            
+        Returns:
+            Mapped team name (or original if no mapping exists).
+        """
+        return self.team_name_mapping.get(team_name, team_name)
+    
+    def calculate_fixture_strength(
+        self,
+        team_name: str,
+        df_fixtures: pd.DataFrame,
+        fdr_map: Dict[str, float],
+        weeks: int
+    ) -> float:
+        """
+        Calculate fixture strength for a team over specified weeks.
+        
+        Args:
+            team_name: Team name in FPL format.
+            df_fixtures: DataFrame containing fixture data.
+            fdr_map: Dictionary mapping opponent teams to FDR multipliers.
+            weeks: Number of weeks to project.
+            
+        Returns:
+            Total fixture strength score.
+        """
+        try:
+            mapped_team = self.map_team_name(team_name)
+            
             upcoming = df_fixtures[
-                ((df_fixtures['home_team'] == mapped) | (df_fixtures['away_team'] == mapped)) &
+                ((df_fixtures['home_team'] == mapped_team) | 
+                 (df_fixtures['away_team'] == mapped_team)) &
                 (df_fixtures['isResult'] == False)
             ].sort_values('datetime').head(weeks)
             
-            if upcoming.empty: return weeks * 1.0
+            if upcoming.empty:
+                default_score = self.config['optimizer']['default_fdr_score']
+                return weeks * default_score
             
-            score = 0
+            home_mult = self.config['optimizer']['home_advantage_multiplier']
+            away_mult = self.config['optimizer']['away_disadvantage_multiplier']
+            
+            score = 0.0
             for _, row in upcoming.iterrows():
-                is_home = row['home_team'] == mapped
-                opp = row['away_team'] if is_home else row['home_team']
-                mult = fdr_map.get(opp, 1.0)
-                site = 1.1 if is_home else 0.9
-                score += mult * site
+                is_home = row['home_team'] == mapped_team
+                opponent = row['away_team'] if is_home else row['home_team']
+                
+                fdr_multiplier = fdr_map.get(opponent, 1.0)
+                site_multiplier = home_mult if is_home else away_mult
+                
+                score += fdr_multiplier * site_multiplier
+            
             return score
-
-        # 4. Veri Hazırlığı
-        df = df_players[df_players['minutes'] >= 500].copy()
-        
-        # Weighted Base xP
-        df['avg_mins'] = (df['minutes'] / 18).clip(upper=90)
-        df['base_xP'] = df['predicted_xP_per_90'] * (df['avg_mins'] / 90)
-        
-        # GW19 Puanı
-        df['gw19_strength'] = df['team_name'].apply(lambda x: get_strength(x, weeks=1))
-        df['gw19_xP'] = df['base_xP'] * df['gw19_strength']
-        
-        # 5 Haftalık Puan
-        df['gw5_strength'] = df['team_name'].apply(lambda x: get_strength(x, weeks=5))
-        df['long_term_xP'] = df['base_xP'] * df['gw5_strength']
-        # app.py uyumluluğu için final_5gw_xP sütununu da oluşturuyoruz
-        df['final_5gw_xP'] = df['long_term_xP']
-        
-        return df
-
-    def solve_dream_team(self, df, target_metric='gw19_xP', budget=100.0):
-        print(f"🧩 Kadro kuruluyor... Hedef: {target_metric}")
-        
-        pool = df.drop_duplicates(subset=['web_name', 'team_name']).sort_values(target_metric, ascending=False).copy()
-        
-        squad = []
-        selected_names = set()
-        
-        current_cost = 0
-        pos_limits = {'GK': 2, 'DEF': 5, 'MID': 5, 'FWD': 3}
-        pos_counts = {'GK': 0, 'DEF': 0, 'MID': 0, 'FWD': 0}
-        team_counts = {t: 0 for t in pool['team_name'].unique()}
-        
-        for _, p in pool.iterrows():
-            if len(squad) < 15:
-                pos = p['position']
-                team = p['team_name']
-                name = p['web_name']
-                
-                if name not in selected_names:
-                    if pos_counts.get(pos, 0) < pos_limits.get(pos, 0) and team_counts.get(team, 0) < 3:
-                        squad.append(p)
-                        selected_names.add(name)
-                        pos_counts[pos] = pos_counts.get(pos, 0) + 1
-                        team_counts[team] = team_counts.get(team, 0) + 1
-                        current_cost += p['price']
-        
-        squad_df = pd.DataFrame(squad)
-        
-        iter_count = 0
-        while current_cost > budget and iter_count < 1000:
-            best_swap = None
-            min_loss_ratio = float('inf')
             
-            current_squad_names = squad_df['web_name'].tolist()
-            candidates = pool[~pool['web_name'].isin(current_squad_names)]
+        except Exception as e:
+            logger.error(
+                f"Error calculating fixture strength for {team_name}: {e}",
+                exc_info=True
+            )
+            default_score = self.config['optimizer']['default_fdr_score']
+            return weeks * default_score
+    
+    def calculate_base_projection(
+        self, 
+        df_players: pd.DataFrame
+    ) -> pd.DataFrame:
+        """
+        Calculate base expected points projection for players.
+        
+        Args:
+            df_players: DataFrame with player data including predicted_xP_per_90.
             
-            for idx, p_out in squad_df.iterrows():
-                avail = candidates[
-                    (candidates['position'] == p_out['position']) & 
-                    (candidates['price'] < p_out['price'])
-                ]
-                
-                for _, p_in in avail.iterrows():
-                    team_ok = (p_in['team_name'] == p_out['team_name']) or (team_counts.get(p_in['team_name'], 0) < 3)
-                    
-                    if team_ok:
-                        price_diff = p_out['price'] - p_in['price']
-                        xp_diff = p_out[target_metric] - p_in[target_metric]
-                        
-                        if price_diff > 0:
-                            ratio = xp_diff / price_diff
-                            if ratio < min_loss_ratio:
-                                min_loss_ratio = ratio
-                                best_swap = (idx, p_in)
+        Returns:
+            DataFrame with added base_xP column.
+        """
+        try:
+            df = df_players.copy()
             
-            if best_swap:
-                idx_out, p_in = best_swap
-                p_out = squad_df.loc[idx_out]
-                
-                current_cost = current_cost - p_out['price'] + p_in['price']
-                team_counts[p_out['team_name']] -= 1
-                team_counts[p_in['team_name']] = team_counts.get(p_in['team_name'], 0) + 1
-                
-                squad_df = squad_df.drop(idx_out)
-                squad_df = pd.concat([squad_df, p_in.to_frame().T], ignore_index=True)
-            else:
+            games_per_season = self.config['optimizer']['games_per_season']
+            max_minutes = self.config['optimizer']['max_minutes_per_game']
+            
+            df['avg_mins'] = (df['minutes'] / games_per_season).clip(upper=max_minutes)
+            df['base_xP'] = df['predicted_xP_per_90'] * (df['avg_mins'] / max_minutes)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error calculating base projection: {e}", exc_info=True)
+            raise
+    
+    def calculate_metrics(
+        self, 
+        df_players: pd.DataFrame, 
+        df_fixtures: pd.DataFrame
+    ) -> pd.DataFrame:
+        """
+        Calculate player metrics including short-term and long-term projections.
+        
+        This method orchestrates the calculation of fixture difficulty, base projections,
+        and gameweek-specific expected points.
+        
+        Args:
+            df_players: DataFrame with player data.
+            df_fixtures: DataFrame with fixture data.
+            
+        Returns:
+            DataFrame with added projection columns.
+        """
+        logger.info("Calculating player metrics and projections")
+        
+        try:
+            # Step 1: Calculate team defensive strength
+            team_xga = self.calculate_team_defensive_strength(df_fixtures)
+            
+            # Step 2: Calculate FDR map
+            fdr_map = self.calculate_fdr_map(team_xga)
+            
+            # Step 3: Filter players by minimum minutes
+            min_minutes = self.config['optimizer']['min_minutes_for_optimization']
+            df = df_players[df_players['minutes'] >= min_minutes].copy()
+            
+            if df.empty:
+                logger.warning("No players meet minimum minutes requirement")
+                return df
+            
+            # Step 4: Calculate base projection
+            df = self.calculate_base_projection(df)
+            
+            # Step 5: Calculate short-term projection (GW19)
+            short_term_weeks = self.config['optimizer']['short_term_weeks']
+            df['gw19_strength'] = df['team_name'].apply(
+                lambda x: self.calculate_fixture_strength(
+                    x, df_fixtures, fdr_map, short_term_weeks
+                )
+            )
+            df['gw19_xP'] = df['base_xP'] * df['gw19_strength']
+            
+            # Step 6: Calculate long-term projection (5 weeks)
+            long_term_weeks = self.config['optimizer']['long_term_weeks']
+            df['gw5_strength'] = df['team_name'].apply(
+                lambda x: self.calculate_fixture_strength(
+                    x, df_fixtures, fdr_map, long_term_weeks
+                )
+            )
+            df['long_term_xP'] = df['base_xP'] * df['gw5_strength']
+            df['final_5gw_xP'] = df['long_term_xP']
+            
+            logger.info(f"Metrics calculated for {len(df)} players")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error calculating metrics: {e}", exc_info=True)
+            raise
+    
+    def _create_initial_squad(
+        self,
+        pool: pd.DataFrame,
+        target_metric: str
+    ) -> Tuple[pd.DataFrame, Dict[str, int], Dict[str, int], float]:
+        """
+        Create initial squad by selecting top players within constraints.
+        
+        Args:
+            pool: DataFrame of available players.
+            target_metric: Column name to optimize for.
+            
+        Returns:
+            Tuple of (squad_dataframe, position_counts, team_counts, total_cost).
+        """
+        squad: List[pd.Series] = []
+        selected_names: set = set()
+        
+        current_cost = 0.0
+        pos_limits = self.config['optimizer']['position_limits']
+        pos_counts: Dict[str, int] = {
+            pos: 0 for pos in pos_limits.keys()
+        }
+        team_counts: Dict[str, int] = {
+            team: 0 for team in pool['team_name'].unique()
+        }
+        squad_size = self.config['optimizer']['squad_size']
+        max_players_per_team = self.config['optimizer']['max_players_per_team']
+        
+        for _, player in pool.iterrows():
+            if len(squad) >= squad_size:
                 break
             
-            iter_count += 1
+            pos = player['position']
+            team = player['team_name']
+            name = player['web_name']
             
-        return squad_df
-
-    def suggest_transfer(self, current_team_df, all_players_df, bank_balance):
-        print("🔄 Transfer fırsatları aranıyor...")
+            if name not in selected_names:
+                if (pos_counts.get(pos, 0) < pos_limits.get(pos, 0) and
+                    team_counts.get(team, 0) < max_players_per_team):
+                    
+                    squad.append(player)
+                    selected_names.add(name)
+                    pos_counts[pos] = pos_counts.get(pos, 0) + 1
+                    team_counts[team] = team_counts.get(team, 0) + 1
+                    current_cost += player['price']
         
-        # Ana havuzdan mevcut takımı çıkar
-        pool = all_players_df[~all_players_df['web_name'].isin(current_team_df['web_name'])].copy()
+        squad_df = pd.DataFrame(squad)
+        return squad_df, pos_counts, team_counts, current_cost
+    
+    def _find_best_swap(
+        self,
+        squad_df: pd.DataFrame,
+        pool: pd.DataFrame,
+        team_counts: Dict[str, int],
+        target_metric: str
+    ) -> Optional[Tuple[pd.Index, pd.Series]]:
+        """
+        Find the best player swap to reduce cost while minimizing point loss.
         
-        best_transfer = None
-        max_gain = 0
-        
-        # Takımdaki her oyuncuyu satmayı dene
-        for idx, p_out in current_team_df.iterrows():
-            # Bütçe = Satılan Oyuncu Fiyatı + Bankadaki Para
-            budget = p_out['price'] + bank_balance
+        Args:
+            squad_df: Current squad DataFrame.
+            pool: Available players pool.
+            team_counts: Current team player counts.
+            target_metric: Column name to optimize for.
             
-            # Adayları Filtrele (Aynı pozisyon, Bütçe yetiyor)
-            candidates = pool[
-                (pool['position'] == p_out['position']) & 
-                (pool['price'] <= budget)
+        Returns:
+            Tuple of (outgoing_player_index, incoming_player_series) or None.
+        """
+        best_swap = None
+        min_loss_ratio = float('inf')
+        
+        current_squad_names = squad_df['web_name'].tolist()
+        candidates = pool[~pool['web_name'].isin(current_squad_names)]
+        max_players_per_team = self.config['optimizer']['max_players_per_team']
+        
+        for idx, p_out in squad_df.iterrows():
+            avail = candidates[
+                (candidates['position'] == p_out['position']) &
+                (candidates['price'] < p_out['price'])
             ]
             
-            if candidates.empty: continue
-            
-            # En iyi adayı bul (5 haftalık puana göre)
-            # Eğer final_5gw_xP yoksa, long_term_xP kullan (yukarıda eşitledik)
-            metric_col = 'final_5gw_xP' if 'final_5gw_xP' in candidates.columns else 'long_term_xP'
-            
-            # NaN değerleri temizle
-            candidates = candidates.dropna(subset=[metric_col])
-            if candidates.empty: continue
-
-            best_in = candidates.sort_values(metric_col, ascending=False).iloc[0]
-            
-            # Puan Kazancı (Gain)
-            # p_out içinde metric_col olmayabilir (eğer dışarıdan geldiyse), kontrol et
-            p_out_score = p_out.get(metric_col, 0)
-            
-            gain = best_in[metric_col] - p_out_score
-            
-            if gain > max_gain:
-                max_gain = gain
-                best_transfer = {
-                    'out': p_out,
-                    'in': best_in,
-                    'gain': gain
-                }
+            for _, p_in in avail.iterrows():
+                team_ok = (
+                    p_in['team_name'] == p_out['team_name'] or
+                    team_counts.get(p_in['team_name'], 0) < max_players_per_team
+                )
                 
-        return best_transfer
+                if team_ok:
+                    price_diff = p_out['price'] - p_in['price']
+                    xp_diff = p_out[target_metric] - p_in[target_metric]
+                    
+                    if price_diff > 0:
+                        ratio = xp_diff / price_diff
+                        if ratio < min_loss_ratio:
+                            min_loss_ratio = ratio
+                            best_swap = (idx, p_in)
+        
+        return best_swap
+    
+    def solve_dream_team(
+        self, 
+        df: pd.DataFrame, 
+        target_metric: str = 'gw19_xP', 
+        budget: Optional[float] = None
+    ) -> pd.DataFrame:
+        """
+        Solve for optimal dream team within budget constraints.
+        
+        Uses a greedy algorithm to build initial squad and then iteratively
+        swaps players to reduce cost while minimizing point loss.
+        
+        Args:
+            df: DataFrame with player data and projections.
+            target_metric: Column name to optimize for (default: 'gw19_xP').
+            budget: Maximum budget. If None, uses config value.
+            
+        Returns:
+            DataFrame containing optimal squad.
+        """
+        logger.info(f"Solving dream team with target metric: {target_metric}")
+        
+        try:
+            if budget is None:
+                budget = self.config['optimizer']['budget']
+            
+            # Prepare player pool
+            pool = df.drop_duplicates(
+                subset=['web_name', 'team_name']
+            ).sort_values(target_metric, ascending=False).copy()
+            
+            if pool.empty:
+                logger.warning("No players available for squad building")
+                return pd.DataFrame()
+            
+            # Create initial squad
+            squad_df, pos_counts, team_counts, current_cost = self._create_initial_squad(
+                pool, target_metric
+            )
+            
+            if squad_df.empty:
+                logger.warning("Could not create initial squad")
+                return pd.DataFrame()
+            
+            # Optimize budget
+            max_iterations = self.config['optimizer']['max_iterations']
+            iter_count = 0
+            
+            while current_cost > budget and iter_count < max_iterations:
+                best_swap = self._find_best_swap(
+                    squad_df, pool, team_counts, target_metric
+                )
+                
+                if best_swap:
+                    idx_out, p_in = best_swap
+                    p_out = squad_df.loc[idx_out]
+                    
+                    current_cost = current_cost - p_out['price'] + p_in['price']
+                    team_counts[p_out['team_name']] -= 1
+                    team_counts[p_in['team_name']] = (
+                        team_counts.get(p_in['team_name'], 0) + 1
+                    )
+                    
+                    squad_df = squad_df.drop(idx_out)
+                    squad_df = pd.concat(
+                        [squad_df, p_in.to_frame().T], 
+                        ignore_index=True
+                    )
+                else:
+                    break
+                
+                iter_count += 1
+            
+            logger.info(
+                f"Dream team solved: {len(squad_df)} players, "
+                f"cost: {current_cost:.2f}, iterations: {iter_count}"
+            )
+            
+            return squad_df
+            
+        except Exception as e:
+            logger.error(f"Error solving dream team: {e}", exc_info=True)
+            raise
+    
+    def suggest_transfer(
+        self, 
+        current_team_df: pd.DataFrame, 
+        all_players_df: pd.DataFrame, 
+        bank_balance: float
+    ) -> Optional[Dict]:
+        """
+        Suggest the best transfer by comparing current team with available players.
+        
+        Args:
+            current_team_df: DataFrame of current team players.
+            all_players_df: DataFrame of all available players.
+            bank_balance: Current bank balance.
+            
+        Returns:
+            Dictionary with 'out', 'in', and 'gain' keys, or None if no transfer found.
+        """
+        logger.info("Searching for transfer opportunities")
+        
+        try:
+            # Remove current team from pool
+            pool = all_players_df[
+                ~all_players_df['web_name'].isin(current_team_df['web_name'])
+            ].copy()
+            
+            if pool.empty:
+                logger.warning("No players available for transfer")
+                return None
+            
+            best_transfer = None
+            max_gain = 0.0
+            
+            # Try selling each player in current team
+            for idx, p_out in current_team_df.iterrows():
+                # Budget = sold player price + bank balance
+                available_budget = p_out['price'] + bank_balance
+                
+                # Filter candidates (same position, within budget)
+                candidates = pool[
+                    (pool['position'] == p_out['position']) &
+                    (pool['price'] <= available_budget)
+                ]
+                
+                if candidates.empty:
+                    continue
+                
+                # Use long_term_xP or final_5gw_xP
+                metric_col = (
+                    'final_5gw_xP' if 'final_5gw_xP' in candidates.columns 
+                    else 'long_term_xP'
+                )
+                
+                # Remove NaN values
+                candidates = candidates.dropna(subset=[metric_col])
+                if candidates.empty:
+                    continue
+                
+                # Find best replacement
+                best_in = candidates.sort_values(metric_col, ascending=False).iloc[0]
+                
+                # Calculate gain
+                p_out_score = p_out.get(metric_col, 0.0)
+                gain = best_in[metric_col] - p_out_score
+                
+                if gain > max_gain:
+                    max_gain = gain
+                    best_transfer = {
+                        'out': p_out,
+                        'in': best_in,
+                        'gain': gain
+                    }
+            
+            if best_transfer:
+                logger.info(
+                    f"Transfer suggestion found: "
+                    f"{best_transfer['out']['web_name']} -> "
+                    f"{best_transfer['in']['web_name']}, gain: {max_gain:.2f}"
+                )
+            else:
+                logger.info("No beneficial transfer found")
+            
+            return best_transfer
+            
+        except Exception as e:
+            logger.error(f"Error suggesting transfer: {e}", exc_info=True)
+            return None

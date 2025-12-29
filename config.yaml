@@ -43,3 +43,80 @@ cookie:
 # 3. Copy the hashed password
 # 4. Add a new user entry under credentials.usernames following the format above
 # 5. Set their role to either 'free', 'premium', or 'admin'
+
+# ============================================================================
+# MODEL CONFIGURATION
+# ============================================================================
+model:
+  # Gradient Boosting Regressor hyperparameters
+  n_estimators: 200
+  learning_rate: 0.05
+  max_depth: 4
+  random_state: 42
+  
+  # Training data filtering
+  min_minutes_for_training: 400  # Minimum minutes played to include in training
+  
+  # Validation split
+  test_size: 0.2  # 20% of data for validation
+  
+  # Feature engineering
+  minutes_per_game: 90  # Standard minutes per game
+  
+  # Model features
+  features:
+    - 'xG_per_90'
+    - 'xA_per_90'
+    - 'us_xGChain'
+    - 'us_xGBuildup'
+    - 'us_shots'
+    - 'us_key_passes'
+    - 'pos_DEF'
+    - 'pos_FWD'
+    - 'pos_GK'
+    - 'pos_MID'
+
+# ============================================================================
+# OPTIMIZER CONFIGURATION
+# ============================================================================
+optimizer:
+  # Fixture difficulty calculation
+  default_team_xga: 1.5  # Default xGA when team data unavailable
+  default_fdr_score: 1.0  # Default FDR score
+  home_advantage_multiplier: 1.1  # Home team advantage multiplier
+  away_disadvantage_multiplier: 0.9  # Away team disadvantage multiplier
+  
+  # Projection periods
+  short_term_weeks: 1  # GW19 projection
+  long_term_weeks: 5  # 5-week projection
+  
+  # Player filtering
+  min_minutes_for_optimization: 500  # Minimum minutes to include in optimization
+  
+  # Minutes calculation
+  games_per_season: 18  # Number of games to normalize minutes
+  max_minutes_per_game: 90  # Maximum minutes per game
+  
+  # Squad building constraints
+  budget: 100.0  # Maximum squad budget
+  squad_size: 15  # Total squad size
+  position_limits:
+    GK: 2
+    DEF: 5
+    MID: 5
+    FWD: 3
+  max_players_per_team: 3  # Maximum players from same team
+  
+  # Optimization algorithm
+  max_iterations: 1000  # Maximum iterations for budget optimization
+  
+  # Team name mapping (FPL to Understat)
+  team_name_mapping:
+    'Man Utd': 'Manchester United'
+    'Man City': 'Manchester City'
+    'Spurs': 'Tottenham'
+    'Newcastle': 'Newcastle United'
+    'Wolves': 'Wolverhampton Wanderers'
+    "Nott'm Forest": 'Nottingham Forest'
+    'Sheffield Utd': 'Sheffield United'
+    'Luton': 'Luton Town'
