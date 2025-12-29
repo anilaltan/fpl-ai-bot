@@ -19,6 +19,9 @@ def main():
     df_merged = loader.merge_data(df_us, df_fpl)
     df_fixtures = loader.process_fixtures(df_fixtures)
     
+    # Fixture bilgilerini ekle (is_home, opponent_difficulty, opponent_team)
+    df_merged = loader.get_fpl_data(df_merged)
+    
     # 2. Modelleme
     model = FPLModel()
     df_predictions, metrics, df_validation = model.train_and_predict(df_merged)

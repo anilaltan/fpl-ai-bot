@@ -21,6 +21,7 @@ class DataLoader:
     def __init__(self):
         self.understat_url = "https://understat.com/getLeagueData/EPL/2025"
         self.fpl_url = "https://fantasy.premierleague.com/api/bootstrap-static/"
+        self.fpl_fixtures_url = "https://fantasy.premierleague.com/api/fixtures/"
         self.headers = {'User-Agent': 'Mozilla/5.0'}
         self.max_retries = 3
     
@@ -197,6 +198,159 @@ class DataLoader:
             error_msg = f"get_next_gw API Hatası: {str(e)}"
             logger.error(error_msg, exc_info=True)
             return {'id': 0, 'name': 'Unknown GW', 'deadline': '-'}
+    
+    def fetch_fpl_fixtures(self):
+        """
+        FPL API'sinden fixtures verilerini çeker.
+        Retry mekanizması ile güvenli API çağrısı yapar.
+        """
+        print("📅 FPL fixtures verileri çekiliyor...")
+        try:
+            r = self._retry_request(requests.get, self.fpl_fixtures_url, headers=self.headers)
+            fixtures_data = r.json()
+            return fixtures_data
+        except Exception as e:
+            error_msg = f"FPL Fixtures API Hatası: {str(e)}"
+            print(f"❌ {error_msg}")
+            logger.error(error_msg, exc_info=True)
+            return []
+    
+    def get_fpl_data(self, df_players):
+        """
+        Oyuncu verilerine fixture bilgilerini ekler.
+        Her oyuncunun bir sonraki maçını bulur ve şu sütunları ekler:
+        - is_home: (Boolean) Eğer maç iç sahadaysa 1, değilse 0
+        - opponent_difficulty: (Int) Rakip takımın zorluk derecesi (FDR)
+        - opponent_team: (String) Rakip takımın adı
+        
+        Args:
+            df_players: Oyuncu verilerini içeren DataFrame (team sütunu içermeli)
+        
+        Returns:
+            DataFrame: Fixture bilgileriyle zenginleştirilmiş oyuncu verileri
+        """
+        if df_players.empty:
+            return df_players
+        
+        print("🔍 Oyuncuların bir sonraki maçları bulunuyor...")
+        
+        # FPL fixtures verilerini çek
+        fixtures_data = self.fetch_fpl_fixtures()
+        if not fixtures_data:
+            print("⚠️ Fixtures verisi çekilemedi, varsayılan değerler kullanılıyor.")
+            df_players['is_home'] = 0
+            df_players['opponent_difficulty'] = 3
+            df_players['opponent_team'] = 'Unknown'
+            return df_players
+        
+        # Bootstrap-static'ten takım bilgilerini ve gameweek bilgisini çek
+        try:
+            r_static = self._retry_request(requests.get, self.fpl_url)
+            static_data = r_static.json()
+            teams_dict = {t['id']: t['name'] for t in static_data['teams']}
+            
+            # Bir sonraki gameweek'i bul
+            next_event = next((e for e in static_data['events'] if e.get('is_next', False)), None)
+            if not next_event:
+                # Eğer is_next yoksa, finished=False olan ilk event'i bul
+                next_event = next((e for e in static_data['events'] if not e.get('finished', True)), None)
+            
+            next_gw_id = next_event['id'] if next_event else None
+        except Exception as e:
+            logger.warning(f"Bootstrap-static verisi çekilemedi: {str(e)}")
+            teams_dict = {}
+            next_gw_id = None
+        
+        # Fixtures'ı DataFrame'e çevir
+        df_fixtures = pd.DataFrame(fixtures_data)
+        
+        if df_fixtures.empty:
+            print("⚠️ Fixtures DataFrame boş, varsayılan değerler kullanılıyor.")
+            df_players['is_home'] = 0
+            df_players['opponent_difficulty'] = 3
+            df_players['opponent_team'] = 'Unknown'
+            return df_players
+        
+        # Bir sonraki gameweek'e ait fixtures'ı filtrele
+        if next_gw_id is not None:
+            df_next_fixtures = df_fixtures[df_fixtures['event'] == next_gw_id].copy()
+        else:
+            # Eğer next_gw_id yoksa, finished=False olan fixtures'ları al
+            if 'finished' in df_fixtures.columns:
+                df_next_fixtures = df_fixtures[df_fixtures['finished'] == False].copy()
+            else:
+                df_next_fixtures = pd.DataFrame()
+            
+            if df_next_fixtures.empty:
+                # Hiçbiri yoksa, event sütununa göre en küçük event'i al
+                if 'event' in df_fixtures.columns:
+                    min_event = df_fixtures['event'].min()
+                    df_next_fixtures = df_fixtures[df_fixtures['event'] == min_event].copy()
+        
+        if df_next_fixtures.empty:
+            print("⚠️ Bir sonraki gameweek için fixture bulunamadı, varsayılan değerler kullanılıyor.")
+            df_players['is_home'] = 0
+            df_players['opponent_difficulty'] = 3
+            df_players['opponent_team'] = 'Unknown'
+            return df_players
+        
+        # Her oyuncu için bir sonraki maçı bul
+        is_home_list = []
+        opponent_difficulty_list = []
+        opponent_team_list = []
+        
+        for idx, player_row in df_players.iterrows():
+            player_team_id = player_row.get('team')
+            
+            if pd.isna(player_team_id) or player_team_id is None:
+                # Takım bilgisi yoksa varsayılan değerler
+                is_home_list.append(0)
+                opponent_difficulty_list.append(3)
+                opponent_team_list.append('Unknown')
+                continue
+            
+            # Bu takımın bir sonraki maçını bul
+            player_fixture = None
+            
+            # Ev sahibi olarak oynayacak mı?
+            home_fixtures = df_next_fixtures[df_next_fixtures['team_h'] == player_team_id]
+            if not home_fixtures.empty:
+                player_fixture = home_fixtures.iloc[0]
+                is_home = 1
+                opponent_team_id = player_fixture.get('team_a')
+                opponent_difficulty = player_fixture.get('team_h_difficulty', 3)
+            else:
+                # Deplasman olarak oynayacak mı?
+                away_fixtures = df_next_fixtures[df_next_fixtures['team_a'] == player_team_id]
+                if not away_fixtures.empty:
+                    player_fixture = away_fixtures.iloc[0]
+                    is_home = 0
+                    opponent_team_id = player_fixture.get('team_h')
+                    opponent_difficulty = player_fixture.get('team_a_difficulty', 3)
+                else:
+                    # Maç bulunamadı
+                    is_home = 0
+                    opponent_team_id = None
+                    opponent_difficulty = 3
+            
+            # Rakip takım adını bul
+            if opponent_team_id is not None and opponent_team_id in teams_dict:
+                opponent_team_name = teams_dict[opponent_team_id]
+            else:
+                opponent_team_name = 'Unknown'
+            
+            is_home_list.append(is_home)
+            opponent_difficulty_list.append(int(opponent_difficulty) if not pd.isna(opponent_difficulty) else 3)
+            opponent_team_list.append(opponent_team_name)
+        
+        # Sütunları ekle
+        df_players['is_home'] = is_home_list
+        df_players['opponent_difficulty'] = opponent_difficulty_list
+        df_players['opponent_team'] = opponent_team_list
+        
+        print(f"✅ {len(df_players)} oyuncu için fixture bilgileri eklendi.")
+        
+        return df_players
 
     def fetch_player_match_history(self, player_id, season=2025):
         """
