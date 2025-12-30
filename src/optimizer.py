@@ -271,7 +271,7 @@ class Optimizer:
         for _, row in df_players.iterrows():
             minutes_list = []
             for col in candidate_cols:
-                if col in row.index and pd.notna(row[col]):
+                if col in row.index:
                     lst = _safe_list(row[col])
                     if lst:
                         minutes_list = [float(x) for x in lst if pd.notna(x)]
