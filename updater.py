@@ -37,6 +37,7 @@ def main(data_dir: Optional[Union[str, Path]] = None) -> Path:
     
     df_us, df_fpl, df_fixtures = loader.fetch_all_data()
     df_merged = loader.merge_data(df_us, df_fpl)
+    df_merged = loader.fetch_player_history_batch(df_merged)
     df_fixtures = loader.process_fixtures(df_fixtures)
     
     # Fixture bilgilerini ekle (is_home, opponent_difficulty, opponent_team)

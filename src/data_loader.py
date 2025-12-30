@@ -1,4 +1,5 @@
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import requests
 import numpy as np
@@ -367,6 +368,63 @@ class DataLoader:
             error_msg = f"FPL Fixtures API Hatası: {str(exc)}"
             logger.error(error_msg, exc_info=True)
             return []
+    
+    def fetch_player_history_batch(
+        self,
+        df_players: pd.DataFrame,
+        max_workers: int = 16
+    ) -> pd.DataFrame:
+        """
+        FPL element-summary endpoint'inden son 5 GW'deki dakika bilgilerini
+        paralel olarak çeker ve minutes_last_five sütunu olarak ekler.
+        """
+        if df_players.empty or 'id' not in df_players.columns:
+            return df_players
+
+        df_players = df_players.copy()
+        player_ids = [int(pid) for pid in df_players['id'].dropna().unique()]
+        if not player_ids:
+            df_players['minutes_last_five'] = [[] for _ in range(len(df_players))]
+            return df_players
+
+        base_url = str(self.fpl_url or "").strip()
+        if 'bootstrap-static' in base_url:
+            base_url = base_url.split('bootstrap-static')[0]
+        if not base_url.endswith('/'):
+            base_url += '/'
+
+        def _fetch_minutes(pid: int) -> Tuple[int, List[int]]:
+            url = f"{base_url}element-summary/{pid}/"
+            try:
+                response = self._retry_request(
+                    requests.get,
+                    url,
+                    headers=self.headers,
+                    timeout=self.request_timeout
+                )
+                payload = response.json() or {}
+                history = payload.get('history') or []
+                last_five = [int(item.get('minutes', 0) or 0) for item in history[-5:]]
+                return pid, last_five
+            except Exception as exc:
+                logger.warning("Dakika geçmişi çekilemedi (id: %s): %s", pid, str(exc))
+                return pid, []
+
+        worker_count = min(max_workers, max(1, len(player_ids)))
+        results: Dict[int, List[int]] = {}
+
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_map = {executor.submit(_fetch_minutes, pid): pid for pid in player_ids}
+            for future in as_completed(future_map):
+                pid, minutes_list = future.result()
+                results[pid] = minutes_list
+
+        df_players['minutes_last_five'] = [
+            results.get(int(pid), []) if pd.notna(pid) else []
+            for pid in df_players['id']
+        ]
+
+        return df_players
     
     def get_fpl_data(self, df_players: pd.DataFrame) -> pd.DataFrame:
         """
