@@ -475,8 +475,10 @@ class Optimizer:
         """
         Solve for optimal dream team within budget constraints.
         
-        Uses a greedy algorithm to build initial squad and then iteratively
-        swaps players to reduce cost while minimizing point loss.
+        Uses an Integer Linear Program (ILP) to maximize:
+            total_points(15 players) + captain_points
+        which reflects FPL captaincy (2x points for one player) without hard-locking
+        any specific player into the squad.
         
         Args:
             df: DataFrame with player data and projections.
@@ -501,10 +503,11 @@ class Optimizer:
                     work_df['chance_of_playing_next_round'], errors='coerce'
                 )
                 before_filter = len(work_df)
+                # Requirement: drop if chance < 75 (unknown/NaN is kept)
                 work_df = work_df[
-                    work_df['chance_of_playing_next_round'].isna() |
-                    (work_df['chance_of_playing_next_round'] >= 75.0)
-                ]
+                    work_df['chance_of_playing_next_round'].isna()
+                    | (work_df['chance_of_playing_next_round'] >= 75.0)
+                ].copy()
                 dropped = before_filter - len(work_df)
                 if dropped > 0:
                     logger.info(
@@ -519,75 +522,132 @@ class Optimizer:
                 return pd.DataFrame()
             
             # Ensure numeric types for optimization columns
+            required_cols = ['web_name', 'team_name', 'position', 'price', target_metric]
+            missing = [c for c in required_cols if c not in work_df.columns]
+            if missing:
+                logger.warning("Missing required columns for optimization: %s", missing)
+                return pd.DataFrame()
+
             work_df[target_metric] = pd.to_numeric(work_df[target_metric], errors='coerce')
             work_df['price'] = pd.to_numeric(work_df['price'], errors='coerce')
-            
-            # Drop rows without required numeric values
-            work_df = work_df.dropna(subset=[target_metric, 'price'])
-            
-            # Captaincy-aware bias: gently upweight premium picks (captain potential)
-            premium_price_threshold = 12.0
-            captaincy_bonus = 1.2  # Acts like adding best-captain upside without hard locks
-            metric_col = f"{target_metric}_captaincy_weighted"
-            work_df[metric_col] = work_df[target_metric] * np.where(
-                work_df['price'] >= premium_price_threshold,
-                captaincy_bonus,
-                1.0
+            work_df = work_df.dropna(subset=['web_name', 'team_name', 'position', 'price', target_metric]).copy()
+
+            # Deduplicate the pool (keep best projected row per player+team)
+            pool = (
+                work_df.sort_values(target_metric, ascending=False)
+                .drop_duplicates(subset=['web_name', 'team_name'], keep='first')
+                .reset_index(drop=True)
             )
-            
-            # Prepare player pool
-            pool = work_df.drop_duplicates(
-                subset=['web_name', 'team_name']
-            ).sort_values(metric_col, ascending=False).copy()
-            
+
             if pool.empty:
-                logger.warning("No players available for squad building")
+                logger.warning("No players available for squad optimization after filtering")
                 return pd.DataFrame()
-            
-            # Create initial squad
-            squad_df, pos_counts, team_counts, current_cost = self._create_initial_squad(
-                pool, metric_col
-            )
-            
-            if squad_df.empty:
-                logger.warning("Could not create initial squad")
-                return pd.DataFrame()
-            
-            # Optimize budget
-            max_iterations = self.config['optimizer']['max_iterations']
-            iter_count = 0
-            
-            while current_cost > budget and iter_count < max_iterations:
-                best_swap = self._find_best_swap(
-                    squad_df, pool, team_counts, metric_col
+
+            # ---- ILP: selection + captain ----
+            try:
+                from pulp import (
+                    LpProblem,
+                    LpMaximize,
+                    LpVariable,
+                    LpBinary,
+                    lpSum,
+                    PULP_CBC_CMD,
+                    LpStatus,
+                    value,
                 )
-                
-                if best_swap:
-                    idx_out, p_in = best_swap
-                    p_out = squad_df.loc[idx_out]
-                    
-                    current_cost = current_cost - p_out['price'] + p_in['price']
-                    team_counts[p_out['team_name']] -= 1
-                    team_counts[p_in['team_name']] = (
-                        team_counts.get(p_in['team_name'], 0) + 1
-                    )
-                    
-                    squad_df = squad_df.drop(idx_out)
-                    squad_df = pd.concat(
-                        [squad_df, p_in.to_frame().T], 
-                        ignore_index=True
-                    )
-                else:
-                    break
-                
-                iter_count += 1
-            
+            except Exception as import_exc:
+                logger.error("PuLP import failed; cannot run ILP optimizer: %s", import_exc, exc_info=True)
+                raise
+
+            squad_size = int(self.config['optimizer']['squad_size'])
+            pos_limits: Dict[str, int] = dict(self.config['optimizer']['position_limits'])
+            max_players_per_team = int(self.config['optimizer']['max_players_per_team'])
+
+            # Variables
+            x = {
+                i: LpVariable(f"x_{i}", lowBound=0, upBound=1, cat=LpBinary)
+                for i in range(len(pool))
+            }
+            c = {
+                i: LpVariable(f"c_{i}", lowBound=0, upBound=1, cat=LpBinary)
+                for i in range(len(pool))
+            }
+
+            prob = LpProblem("fpl_dream_team", LpMaximize)
+
+            points = pool[target_metric].astype(float).tolist()
+            prices = pool['price'].astype(float).tolist()
+
+            # Objective:
+            #   maximize total_points(15) + captain_points
+            # plus a soft "premium captaincy potential" bias (no hard locks):
+            #   players with price >= 12.0 get a mild upweight in the objective.
+            premium_price_threshold = 12.0
+            premium_bias = 1.2
+            obj_points = [
+                (points[i] * premium_bias) if (prices[i] >= premium_price_threshold) else points[i]
+                for i in range(len(points))
+            ]
+
+            prob += lpSum(obj_points[i] * x[i] for i in x) + lpSum(obj_points[i] * c[i] for i in c)
+
+            # Squad size
+            prob += lpSum(x[i] for i in x) == squad_size
+
+            # Position constraints
+            for pos, lim in pos_limits.items():
+                idxs = [i for i in range(len(pool)) if str(pool.loc[i, 'position']) == str(pos)]
+                prob += lpSum(x[i] for i in idxs) == int(lim)
+
+            # Team constraints
+            for team in pool['team_name'].unique().tolist():
+                idxs = [i for i in range(len(pool)) if pool.loc[i, 'team_name'] == team]
+                prob += lpSum(x[i] for i in idxs) <= max_players_per_team
+
+            # Budget
+            prob += lpSum(prices[i] * x[i] for i in x) <= float(budget)
+
+            # Captain: exactly one, and must be selected
+            prob += lpSum(c[i] for i in c) == 1
+            for i in range(len(pool)):
+                prob += c[i] <= x[i]
+
+            # Solve
+            solver = PULP_CBC_CMD(msg=False, timeLimit=20)
+            prob.solve(solver)
+
+            status_str = LpStatus.get(prob.status, str(prob.status))
+            if status_str not in ("Optimal", "Feasible"):
+                logger.warning("ILP did not find a feasible solution (status=%s)", status_str)
+                return pd.DataFrame()
+
+            selected_idxs = [i for i in range(len(pool)) if (value(x[i]) or 0) > 0.5]
+            captain_idxs = [i for i in range(len(pool)) if (value(c[i]) or 0) > 0.5]
+
+            squad_df = pool.loc[selected_idxs].copy()
+            squad_df['is_captain'] = False
+            if captain_idxs:
+                squad_df.loc[squad_df.index.isin(captain_idxs), 'is_captain'] = True
+
+            total_cost = float(squad_df['price'].sum()) if not squad_df.empty else 0.0
+            total_points = float(squad_df[target_metric].sum()) if not squad_df.empty else 0.0
+            captain_points = 0.0
+            captain_name = None
+            if captain_idxs:
+                cap_row = pool.loc[captain_idxs[0]]
+                captain_points = float(cap_row[target_metric])
+                captain_name = str(cap_row.get('web_name', ''))
+
             logger.info(
-                f"Dream team solved: {len(squad_df)} players, "
-                f"cost: {current_cost:.2f}, iterations: {iter_count}"
+                "Dream team solved (ILP): %d players, cost=%.2f, base_points=%.2f, captain=%s (+%.2f)",
+                len(squad_df),
+                total_cost,
+                total_points,
+                captain_name,
+                captain_points,
             )
-            
-            return squad_df
+
+            return squad_df.reset_index(drop=True)
             
         except Exception as e:
             logger.error(f"Error solving dream team: {e}", exc_info=True)
