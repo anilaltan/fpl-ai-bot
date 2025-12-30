@@ -7,6 +7,7 @@ Fantasy Premier League player points using segmented XGBoost regressors.
 
 import logging
 import ast
+import json
 from typing import Any, Dict, List, Tuple, Optional
 import pandas as pd
 import numpy as np
@@ -43,6 +44,8 @@ class FPLModel:
             config_path: Optional path to config.yaml file. If None, uses default path.
         """
         self.config = self._load_config(config_path)
+        self.data_dir = Path(__file__).parent.parent / 'data'
+        self.feature_list_path = self.data_dir / 'feature_list.json'
         # Temel ve segment bazlı feature listeleri
         base_features = self.config['model']['features']
 
@@ -116,6 +119,38 @@ class FPLModel:
         except yaml.YAMLError as e:
             logger.error(f"Invalid YAML in config file: {e}")
             raise
+    
+    def _save_feature_list(self, feature_payload: Dict[str, List[str]]) -> None:
+        """
+        Persist the feature list used during training for later prediction alignment.
+        """
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            with open(self.feature_list_path, 'w', encoding='utf-8') as f:
+                json.dump(feature_payload, f, indent=2)
+            logger.debug("Feature list saved to %s", self.feature_list_path)
+        except Exception as exc:  # pragma: no cover - safeguard for IO
+            logger.warning("Feature list could not be saved to %s: %s", self.feature_list_path, exc)
+    
+    def _load_feature_list(self) -> Dict[str, List[str]]:
+        """
+        Load the persisted feature list for prediction-time alignment.
+        Falls back to in-memory definitions when unavailable.
+        """
+        try:
+            with open(self.feature_list_path, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+            if not isinstance(payload, dict):
+                raise ValueError("feature_list.json format is invalid (expected dict).")
+            return payload
+        except FileNotFoundError:
+            logger.warning("Feature list file not found at %s, using in-memory feature sets.", self.feature_list_path)
+        except Exception as exc:
+            logger.error("Feature list load error, using in-memory feature sets: %s", exc)
+        return {
+            "defensive": list(self.defensive_features),
+            "offensive": list(self.offensive_features)
+        }
     
     def prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -226,7 +261,10 @@ class FPLModel:
             X, y, test_size=test_size, random_state=random_state
         )
 
-        model = XGBRegressor(**model_params)
+        xgb_params = dict(model_params)
+        # XGBoost'ta kategorik desteği açıp açmadığımızı kontrol ediyoruz; burada tüm veriler float.
+        xgb_params.setdefault("enable_categorical", False)
+        model = XGBRegressor(**xgb_params)
         model.fit(X_train, y_train)
 
         y_pred_test = model.predict(X_test)
@@ -261,10 +299,29 @@ class FPLModel:
         Tahmin öncesi veri ve sonuç istatistiklerini loglar.
         Pre-flight kontrol, dtype zorlaması ve scaler doğrulaması içerir.
         """
-        checked_df = self._ensure_feature_columns(
-            df_segment, feature_list, stage=f"predict:{segment_name}"
+        feature_payload = self._load_feature_list()
+        loaded_features = feature_payload.get(segment_name) or feature_list
+
+        print(f"Model Beklentisi: {loaded_features[:5]}...")
+        print(f"Gelen Veri Sütunları: {list(df_segment.columns[:5])}...")
+
+        missing_features = [f for f in loaded_features if f not in df_segment.columns]
+        extra_features = [c for c in df_segment.columns if c not in loaded_features]
+        if missing_features or extra_features:
+            logger.debug(
+                "[%s] Feature alignment - missing: %s | extra: %s",
+                segment_name,
+                missing_features,
+                extra_features
+            )
+
+        aligned_df = df_segment.reindex(columns=loaded_features, fill_value=0)
+        aligned_df = (
+            aligned_df.apply(pd.to_numeric, errors='coerce')
+            .fillna(0.0)
+            .astype(float)
         )
-        input_data = checked_df[feature_list]
+        input_data = aligned_df[loaded_features]
 
         print(f"[DEBUG][{segment_name}] Input head:\n{input_data.head()}")
         print(f"[DEBUG][{segment_name}] Input describe():\n{input_data.describe(include='all')}")
@@ -288,7 +345,7 @@ class FPLModel:
         print(f"[DEBUG][{segment_name}] İlk 5 tahmin: {predictions[:5]}")
 
         if hasattr(model, "feature_importances_"):
-            importances = pd.Series(model.feature_importances_, index=feature_list)
+            importances = pd.Series(model.feature_importances_, index=loaded_features)
             print(
                 f"[DEBUG][{segment_name}] Feature importances (top 20):\n"
                 f"{importances.sort_values(ascending=False).head(20)}"
@@ -368,6 +425,12 @@ class FPLModel:
 
             # 1. Feature encoding
             df_encoded = self.prepare_features(df)
+
+            # 1.b Feature listelerini kaydet (tahmin sırasında hizalama için)
+            self._save_feature_list({
+                "defensive": list(self.defensive_features),
+                "offensive": list(self.offensive_features)
+            })
 
             # Orijinal bilgileri koru
             df_encoded['position_orig'] = original_df['position']
