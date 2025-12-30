@@ -49,6 +49,11 @@ class DataLoader:
             int(s) for s in cfg.get('understat_seasons', []) if str(s).isdigit()
         ]
         self.request_timeout: int = int(cfg.get('request_timeout', 15))
+
+        # Cached matchup / conceded stats (computed from element-summary history)
+        self._teams_cache: Optional[Dict[int, str]] = None
+        self.team_conceded_avg_by_pos: Dict[str, Dict[str, float]] = {}
+        self.league_avg_pts_by_pos: Dict[str, float] = {}
     
     def _load_config(self, config_path: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -160,6 +165,26 @@ class DataLoader:
         if last_exception:
             raise last_exception
         raise RuntimeError("Retry loop exited without response or exception.")
+
+    def _get_fpl_teams_dict(self) -> Dict[int, str]:
+        """
+        Fetch and cache FPL teams dict: {team_id: team_name}.
+        """
+        if isinstance(getattr(self, "_teams_cache", None), dict) and self._teams_cache:
+            return self._teams_cache
+        try:
+            r_fpl = self._retry_request(requests.get, self.fpl_url, headers=self.headers)
+            data_fpl = r_fpl.json() or {}
+            teams = {
+                int(t["id"]): str(t["name"])
+                for t in (data_fpl.get("teams") or [])
+                if isinstance(t, dict) and "id" in t and "name" in t
+            }
+            self._teams_cache = teams
+            return teams
+        except Exception:
+            self._teams_cache = {}
+            return {}
 
     def _fetch_understat_players(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
@@ -304,9 +329,6 @@ class DataLoader:
         ]
         df_merged = self._force_numeric(df_merged, numeric_cols, fill_value=0.0)
 
-        # Feature engineering enrichments
-        df_merged = self.enrich_data(df_merged)
-
         return df_merged
 
     def enrich_data(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -314,98 +336,125 @@ class DataLoader:
         Feature engineering enrichment step(s).
 
         Adds:
-        - set_piece_threat: Defender Threat Index (DTI) proxy for set-piece goal potential.
-          Computed ONLY for defenders; other positions get 0.0.
+        - set_piece_threat: Universal set piece / dead-ball threat proxy.
+          Uses aerial threat (ICT threat per 90) + set-piece taker bonuses.
+        - matchup_advantage: positional matchup bonus based on opponent conceding points
+          to that position vs league average. Defaults to 1.0 when unavailable.
         """
         if df is None or df.empty:
             return df
 
         df = df.copy()
 
-        # Initialize column
+        # Initialize columns
         df["set_piece_threat"] = 0.0
+        df["matchup_advantage"] = 1.0
 
-        # Determine defender mask
-        if "position" in df.columns:
-            pos = df["position"].astype(str).str.upper()
-            defender_mask = pos.eq("DEF")
-        elif "element_type" in df.columns:
-            # Fallback: accept both common FPL code (2) and legacy variant (3)
-            et = pd.to_numeric(df["element_type"], errors="coerce").fillna(-1).astype(int)
-            defender_mask = et.isin([2, 3])
-        else:
-            defender_mask = pd.Series(False, index=df.index)
-
-        # Helpers to safely pick / derive per-90 metrics
+        # Helpers
         def _series_or_zeros(col: str) -> pd.Series:
             if col in df.columns:
                 return pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype(float)
             return pd.Series(0.0, index=df.index, dtype=float)
 
         minutes = _series_or_zeros("minutes")
+        threat = _series_or_zeros("threat")
 
-        # 1) xG per 90 (prefer npxG_per_90 if available)
-        if "npxG_per_90" in df.columns:
-            xg_p90 = _series_or_zeros("npxG_per_90")
-        elif "xG_per_90" in df.columns:
-            xg_p90 = _series_or_zeros("xG_per_90")
+        # Universal: Aerial threat via ICT threat per 90
+        base_threat_p90 = np.where(minutes > 0, (threat / minutes) * 90.0, 0.0)
+        base_threat_p90 = pd.Series(base_threat_p90, index=df.index, dtype=float)
+
+        # Determine defender mask for weighting
+        if "position" in df.columns:
+            pos = df["position"].astype(str).str.upper()
+            is_def = pos.eq("DEF")
+        elif "element_type" in df.columns:
+            et = pd.to_numeric(df["element_type"], errors="coerce").fillna(-1).astype(int)
+            is_def = et.eq(2)  # FPL: 2=DEF
         else:
-            # FPL native expected goals per 90
-            xg_p90 = _series_or_zeros("expected_goals_per_90")
+            is_def = pd.Series(False, index=df.index)
 
-        # 2) shots per 90
-        if "shots_per_90" in df.columns:
-            shots_p90 = _series_or_zeros("shots_per_90")
-        elif "us_shots" in df.columns:
-            us_shots = _series_or_zeros("us_shots")
-            if (minutes > 0).any():
-                shots_p90 = np.where(minutes > 0, (us_shots / minutes) * 90.0, 0.0)
-                shots_p90 = pd.Series(shots_p90, index=df.index, dtype=float)
-            else:
-                # Fallback (as requested): treat us_shots as already normalized-ish
-                shots_p90 = pd.Series(us_shots / 90.0, index=df.index, dtype=float)
-        else:
-            shots_p90 = pd.Series(0.0, index=df.index, dtype=float)
+        aerial_component = base_threat_p90 * np.where(is_def, 0.2, 0.1)
+        aerial_component = pd.Series(aerial_component, index=df.index, dtype=float)
 
-        # 3) threat per 90 (FPL ICT Threat)
-        if "threat_per_90" in df.columns:
-            threat_p90 = _series_or_zeros("threat_per_90")
-        elif "threat" in df.columns:
-            threat = _series_or_zeros("threat")
-            if (minutes > 0).any():
-                threat_p90 = np.where(minutes > 0, (threat / minutes) * 90.0, 0.0)
-                threat_p90 = pd.Series(threat_p90, index=df.index, dtype=float)
-            else:
-                threat_p90 = pd.Series(threat / 90.0, index=df.index, dtype=float)
-        else:
-            threat_p90 = pd.Series(0.0, index=df.index, dtype=float)
+        # Set-piece taker bonus (order columns can be float/string)
+        corners_order = pd.to_numeric(
+            df["corners_and_indirect_freekicks_order"], errors="coerce"
+        ) if "corners_and_indirect_freekicks_order" in df.columns else pd.Series(np.nan, index=df.index)
+        direct_fk_order = pd.to_numeric(
+            df["direct_freekicks_order"], errors="coerce"
+        ) if "direct_freekicks_order" in df.columns else pd.Series(np.nan, index=df.index)
+        pens_order = pd.to_numeric(
+            df["penalties_order"], errors="coerce"
+        ) if "penalties_order" in df.columns else pd.Series(np.nan, index=df.index)
 
-        # DTI formula for defenders only
-        set_piece_threat = (xg_p90 * 0.4) + (shots_p90 * 0.4) + (threat_p90 * 0.2)
-        df.loc[defender_mask, "set_piece_threat"] = (
-            pd.to_numeric(set_piece_threat[defender_mask], errors="coerce")
-            .fillna(0.0)
-            .astype(float)
-        )
+        bonus = pd.Series(0.0, index=df.index, dtype=float)
 
-        # Debug print: Top 5 defenders by set_piece_threat
+        # Penalties: 1 -> +3.0, 2 -> +1.0
+        bonus += np.where(np.isclose(pens_order, 1.0, equal_nan=False), 3.0, 0.0)
+        bonus += np.where(np.isclose(pens_order, 2.0, equal_nan=False), 1.0, 0.0)
+
+        # Direct free kicks: 1 -> +1.5, 2 -> +0.5
+        bonus += np.where(np.isclose(direct_fk_order, 1.0, equal_nan=False), 1.5, 0.0)
+        bonus += np.where(np.isclose(direct_fk_order, 2.0, equal_nan=False), 0.5, 0.0)
+
+        # Corners/indirect: 1 -> +1.0, 2 -> +0.25
+        bonus += np.where(np.isclose(corners_order, 1.0, equal_nan=False), 1.0, 0.0)
+        bonus += np.where(np.isclose(corners_order, 2.0, equal_nan=False), 0.25, 0.0)
+
+        set_piece_threat = (aerial_component + bonus).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        df["set_piece_threat"] = pd.to_numeric(set_piece_threat, errors="coerce").fillna(0.0).astype(float)
+
+        # Debug print: Top 10 players by set_piece_threat
         try:
-            if defender_mask.any():
-                name_cols = [c for c in ["web_name", "team_name", "position"] if c in df.columns]
-                debug_df = df.loc[defender_mask, name_cols].copy()
-                debug_df["set_piece_threat"] = df.loc[defender_mask, "set_piece_threat"].astype(float)
-                debug_df["xg_p90_used"] = xg_p90[defender_mask].astype(float)
-                debug_df["shots_p90_used"] = shots_p90[defender_mask].astype(float)
-                debug_df["threat_p90_used"] = threat_p90[defender_mask].astype(float)
-                debug_df = debug_df.sort_values("set_piece_threat", ascending=False).head(5)
-                print("\n[DEBUG] Top 5 DEF by set_piece_threat:")
-                print(
-                    debug_df.to_string(
-                        index=False, float_format=lambda x: f"{float(x):.4f}"
-                    )
-                )
+            name_cols = [c for c in ["web_name", "team_name", "position"] if c in df.columns]
+            debug_df = df[name_cols].copy() if name_cols else df.copy()
+            debug_df["set_piece_threat"] = df["set_piece_threat"].astype(float)
+            debug_df = debug_df.sort_values("set_piece_threat", ascending=False).head(10)
+            print("\n[DEBUG] Top 10 players by set_piece_threat:")
+            print(debug_df.to_string(index=False, float_format=lambda x: f"{float(x):.4f}"))
         except Exception as exc:
             logger.debug("set_piece_threat debug print failed: %s", exc)
+
+        # Matchup advantage (requires opponent_team and position)
+        try:
+            if "opponent_team" in df.columns and "position" in df.columns:
+                league_avg = dict(getattr(self, "league_avg_pts_by_pos", {}) or {})
+                conceded_avg = dict(getattr(self, "team_conceded_avg_by_pos", {}) or {})
+
+                pos_series = df["position"].astype(str).str.upper()
+                opp_series = df["opponent_team"].astype(str)
+
+                def _baseline(pos: str) -> float:
+                    v = float(league_avg.get(pos, 0.0) or 0.0)
+                    return v if v > 0 else 0.0
+
+                matchup_vals: List[float] = []
+                for pos, opp in zip(pos_series.tolist(), opp_series.tolist()):
+                    base = _baseline(pos)
+                    if not opp or opp == "Unknown" or base <= 0:
+                        matchup_vals.append(1.0)
+                        continue
+                    conceded = float((conceded_avg.get(opp, {}) or {}).get(pos, 0.0) or 0.0)
+                    if conceded <= 0:
+                        matchup_vals.append(1.0)
+                        continue
+                    matchup_vals.append(conceded / base if base > 0 else 1.0)
+
+                df["matchup_advantage"] = (
+                    pd.Series(matchup_vals, index=df.index, dtype=float)
+                    .replace([np.inf, -np.inf], np.nan)
+                    .fillna(1.0)
+                    .astype(float)
+                )
+
+                # Debug print: Top 5 players by matchup_advantage
+                debug_cols = [c for c in ["web_name", "team_name", "position", "opponent_team", "matchup_advantage"] if c in df.columns]
+                if debug_cols:
+                    top5 = df.sort_values("matchup_advantage", ascending=False).head(5)[debug_cols]
+                    print("\n[DEBUG] Top 5 players by matchup_advantage:")
+                    print(top5.to_string(index=False, float_format=lambda x: f"{float(x):.4f}"))
+        except Exception as exc:
+            logger.debug("matchup_advantage computation failed: %s", exc)
 
         return df
 
@@ -490,13 +539,26 @@ class DataLoader:
             df_players['minutes_last_five'] = [[] for _ in range(len(df_players))]
             return df_players
 
+        # Position map for conceded stats aggregation (opponent weakness by position)
+        pid_to_pos: Dict[int, str] = {}
+        if "position" in df_players.columns:
+            try:
+                for pid, pos in zip(df_players["id"].tolist(), df_players["position"].tolist()):
+                    if pd.notna(pid) and pd.notna(pos):
+                        pid_to_pos[int(pid)] = str(pos).upper()
+            except Exception:
+                pid_to_pos = {}
+
+        # Team id -> name mapping for opponent_team ids inside element-summary history
+        teams_dict = self._get_fpl_teams_dict()
+
         base_url = str(self.fpl_url or "").strip()
         if 'bootstrap-static' in base_url:
             base_url = base_url.split('bootstrap-static')[0]
         if not base_url.endswith('/'):
             base_url += '/'
 
-        def _fetch_minutes(pid: int) -> Tuple[int, List[int]]:
+        def _fetch_minutes(pid: int) -> Tuple[int, List[int], Dict[str, Dict[str, Dict[str, float]]]]:
             url = f"{base_url}element-summary/{pid}/"
             try:
                 response = self._retry_request(
@@ -508,24 +570,74 @@ class DataLoader:
                 payload = response.json() or {}
                 history = payload.get('history') or []
                 last_five = [int(item.get('minutes', 0) or 0) for item in history[-5:]]
-                return pid, last_five
+                # Build per-player contributions to "opponent conceded points by position"
+                # Structure: {opponent_team_name: {position: {'pts': sum, 'matches': count}}}
+                pos = pid_to_pos.get(int(pid), "UNK")
+                contrib: Dict[str, Dict[str, Dict[str, float]]] = {}
+                for item in history:
+                    try:
+                        mins = float(item.get("minutes", 0) or 0)
+                        if mins <= 0:
+                            continue
+                        opp_id = int(item.get("opponent_team", 0) or 0)
+                        if opp_id <= 0:
+                            continue
+                        opp_name = teams_dict.get(opp_id)
+                        if not opp_name:
+                            continue
+                        pts = float(item.get("total_points", 0) or 0)
+                        bucket = contrib.setdefault(opp_name, {}).setdefault(pos, {"pts": 0.0, "matches": 0.0})
+                        bucket["pts"] += pts
+                        bucket["matches"] += 1.0
+                    except Exception:
+                        continue
+                return pid, last_five, contrib
             except Exception as exc:
                 logger.warning("Dakika geçmişi çekilemedi (id: %s): %s", pid, str(exc))
-                return pid, []
+                return pid, [], {}
 
         worker_count = min(max_workers, max(1, len(player_ids)))
         results: Dict[int, List[int]] = {}
+        conceded_totals: Dict[str, Dict[str, Dict[str, float]]] = {}
+        league_totals: Dict[str, Dict[str, float]] = {}
 
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             future_map = {executor.submit(_fetch_minutes, pid): pid for pid in player_ids}
             for future in as_completed(future_map):
-                pid, minutes_list = future.result()
+                pid, minutes_list, contrib = future.result()
                 results[pid] = minutes_list
+
+                # Aggregate to global totals
+                for opp_team, pos_map in (contrib or {}).items():
+                    for pos, stats in (pos_map or {}).items():
+                        tot = conceded_totals.setdefault(opp_team, {}).setdefault(pos, {"pts": 0.0, "matches": 0.0})
+                        tot["pts"] += float(stats.get("pts", 0.0) or 0.0)
+                        tot["matches"] += float(stats.get("matches", 0.0) or 0.0)
+
+                        lt = league_totals.setdefault(pos, {"pts": 0.0, "matches": 0.0})
+                        lt["pts"] += float(stats.get("pts", 0.0) or 0.0)
+                        lt["matches"] += float(stats.get("matches", 0.0) or 0.0)
 
         df_players['minutes_last_five'] = [
             results.get(int(pid), []) if pd.notna(pid) else []
             for pid in df_players['id']
         ]
+
+        # Cache conceded averages and league averages for matchup feature engineering
+        league_avg: Dict[str, float] = {}
+        for pos, st in league_totals.items():
+            m = float(st.get("matches", 0.0) or 0.0)
+            league_avg[pos] = (float(st.get("pts", 0.0) or 0.0) / m) if m > 0 else 0.0
+
+        conceded_avg: Dict[str, Dict[str, float]] = {}
+        for opp_team, pos_map in conceded_totals.items():
+            conceded_avg[opp_team] = {}
+            for pos, st in pos_map.items():
+                m = float(st.get("matches", 0.0) or 0.0)
+                conceded_avg[opp_team][pos] = (float(st.get("pts", 0.0) or 0.0) / m) if m > 0 else 0.0
+
+        self.team_conceded_avg_by_pos = conceded_avg
+        self.league_avg_pts_by_pos = league_avg
 
         return df_players
     
@@ -658,6 +770,9 @@ class DataLoader:
         df_players['is_home'] = is_home_list
         df_players['opponent_difficulty'] = opponent_difficulty_list
         df_players['opponent_team'] = opponent_team_list
+
+        # Feature engineering that depends on opponent_team (e.g., matchup_advantage)
+        df_players = self.enrich_data(df_players)
         
         print(f"✅ {len(df_players)} oyuncu için fixture bilgileri eklendi.")
         
@@ -844,14 +959,25 @@ class DataLoader:
         df_merged['form_momentum'] = form_momentum_values
         return df_merged
 
-    def fetch_user_team(self, team_id: str) -> Tuple[Optional[List[int]], float]:
+    def fetch_user_team(self, team_id: str, df_players: pd.DataFrame) -> List[str]:
+        """
+        Fetch user's team from previous gameweek and return player web_names.
+
+        Args:
+            team_id: FPL team ID
+            df_players: DataFrame with player data to map IDs to names
+
+        Returns:
+            List of web_names for the user's team
+        """
         logger.info("👤 Kullanıcı takımı çekiliyor: %s", team_id)
         clean_team_id = str(team_id).strip()
         if not clean_team_id.isdigit():
             logger.error("Geçersiz takım ID formatı: %s", team_id)
-            return None, 0.0
+            return []
 
         try:
+            # Get current event from bootstrap-static
             r_static = self._retry_request(
                 requests.get,
                 self.fpl_url,
@@ -861,63 +987,67 @@ class DataLoader:
             data_static = r_static.json()
         except Exception as exc:
             logger.error("bootstrap-static alınamadı: %s", str(exc), exc_info=True)
-            data_static = {}
+            return []
 
-        try:
-            entry_url = f"https://fantasy.premierleague.com/api/entry/{clean_team_id}/"
-            r_entry = self._retry_request(
-                requests.get,
-                entry_url,
-                headers=self.headers,
-                timeout=15
-            )
-            entry_data = r_entry.json()
-        except Exception as exc:
-            error_msg = f"entry API Hatası (team_id: {clean_team_id}): {str(exc)}"
-            logger.error(error_msg, exc_info=True)
-            return None, 0.0
-
+        # Find current event
         events = data_static.get('events', []) if isinstance(data_static, dict) else []
-        current_gw_obj = None
-        gw_id = entry_data.get('current_event') or entry_data.get('last_deadline_event')
-        if not gw_id and events:
-            current_gw_obj = next((x for x in events if x.get('is_current')), None)
-            if not current_gw_obj:
-                current_gw_obj = next((x for x in events if x.get('is_next')), None)
-            if not current_gw_obj:
-                current_gw_obj = next((x for x in reversed(events) if x.get('finished') or x.get('is_previous')), None)
-            if current_gw_obj:
-                gw_id = current_gw_obj.get('id')
+        current_event = None
+        for event in events:
+            if event.get('is_current'):
+                current_event = event.get('id')
+                break
+        if not current_event:
+            for event in events:
+                if event.get('is_next'):
+                    current_event = event.get('id')
+                    break
+        if not current_event:
+            logger.error("Current event bulunamadı")
+            return []
 
-        if not gw_id:
-            logger.error("Aktif gameweek belirlenemedi (team_id: %s)", clean_team_id)
-            return None, 0.0
-        
+        # Use previous GW (current_event - 1)
+        target_gw = current_event - 1
+        if target_gw < 1:
+            logger.error("Geçerli bir önceki GW bulunamadı (current_event: %s)", current_event)
+            return []
+
         try:
-            picks_url = f"https://fantasy.premierleague.com/api/entry/{clean_team_id}/event/{gw_id}/picks/"
+            # Fetch picks from previous GW
+            picks_url = f"https://fantasy.premierleague.com/api/entry/{clean_team_id}/event/{target_gw}/picks/"
             r_picks = self._retry_request(
                 requests.get,
                 picks_url,
                 headers=self.headers,
                 timeout=15
             )
-            
+
             data_picks = r_picks.json()
             picks = data_picks.get('picks') or []
             if not picks:
-                logger.error(
-                    "Picks listesi boş döndü (team_id: %s, gw: %s). Response: %s",
+                logger.warning(
+                    "Picks listesi boş döndü (team_id: %s, gw: %s). Önceki GW'de takım olmayabilir.",
                     clean_team_id,
-                    gw_id,
-                    data_picks
+                    target_gw
                 )
-                return None, 0.0
+                return []
 
+            # Get player IDs
             player_ids = [int(p['element']) for p in picks if 'element' in p]
-            bank_raw = (data_picks.get('entry_history') or {}).get('bank', 0)
-            bank = float(bank_raw) / 10.0 if bank_raw is not None else 0.0
-            return player_ids, bank
+
+            # Map IDs to web_names using df_players
+            id_to_name = dict(zip(df_players['id'], df_players['web_name']))
+            player_names = []
+            for pid in player_ids:
+                name = id_to_name.get(pid)
+                if name:
+                    player_names.append(name)
+                else:
+                    logger.warning("Oyuncu ID bulunamadı: %s", pid)
+
+            logger.info("✅ %d oyuncu çekildi (Team ID: %s, GW: %s)", len(player_names), clean_team_id, target_gw)
+            return player_names
+
         except Exception as exc:
-            error_msg = f"fetch_user_team API Hatası (team_id: {clean_team_id}): {str(exc)}"
+            error_msg = f"fetch_user_team API Hatası (team_id: {clean_team_id}, gw: {target_gw}): {str(exc)}"
             logger.error(error_msg, exc_info=True)
-            return None, 0.0
+            return []

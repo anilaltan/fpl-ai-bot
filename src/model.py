@@ -59,7 +59,7 @@ class FPLModel:
         self.offensive_features = sorted(set(base_features + [
             'goals_scored', 'assists', 'threat', 'creativity',
             'expected_goals_per_90', 'expected_assists_per_90',
-            'expected_goal_involvements_per_90', 'minutes', 'volatility_index'
+            'expected_goal_involvements_per_90', 'matchup_advantage', 'minutes', 'volatility_index'
         ]))
 
         # Tüm feature'ları bir araya getirerek encode sürecinde eksik sütunları garanti ediyoruz

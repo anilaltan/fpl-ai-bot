@@ -50,6 +50,7 @@ def format_table(squad_df: pd.DataFrame) -> str:
             "price",
             "gw19_xP",
             "set_piece_threat",
+            "matchup_advantage",
             "Risk_Penalty",
         ]
     ].rename(
@@ -60,6 +61,7 @@ def format_table(squad_df: pd.DataFrame) -> str:
             "price": "Price",
             "gw19_xP": "gw19_xP",
             "set_piece_threat": "set_piece_threat",
+            "matchup_advantage": "matchup_advantage",
         }
     )
 
@@ -69,6 +71,7 @@ def format_table(squad_df: pd.DataFrame) -> str:
             "Price": lambda x: f"{float(x):.1f}",
             "gw19_xP": lambda x: f"{float(x):.2f}",
             "set_piece_threat": lambda x: f"{float(x):.4f}",
+            "matchup_advantage": lambda x: f"{float(x):.4f}",
             "Risk_Penalty": lambda x: f"{float(x):.2f}",
         },
     )
@@ -87,6 +90,10 @@ def main() -> None:
         except Exception:
             # Non-fatal: proceed without the column if enrichment fails
             df["set_piece_threat"] = 0.0
+
+    # matchup_advantage depends on cached conceded stats from updater's run; do not recompute here.
+    if "matchup_advantage" not in df.columns:
+        df["matchup_advantage"] = 1.0
 
     optimizer = Optimizer()
     df = _prepare_dataframe(df, optimizer)
