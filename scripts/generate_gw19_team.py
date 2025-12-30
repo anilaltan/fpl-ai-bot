@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.optimizer import Optimizer
+from src.data_loader import DataLoader
 
 DATA_PATH = PROJECT_ROOT / "data" / "all_players.csv"
 
@@ -42,7 +43,15 @@ def _prepare_dataframe(df: pd.DataFrame, optimizer: Optimizer) -> pd.DataFrame:
 def format_table(squad_df: pd.DataFrame) -> str:
     """Return a string table with requested columns."""
     display_df = squad_df[
-        ["position", "web_name", "team_name", "price", "gw19_xP", "Risk_Penalty"]
+        [
+            "position",
+            "web_name",
+            "team_name",
+            "price",
+            "gw19_xP",
+            "set_piece_threat",
+            "Risk_Penalty",
+        ]
     ].rename(
         columns={
             "position": "Position",
@@ -50,6 +59,7 @@ def format_table(squad_df: pd.DataFrame) -> str:
             "team_name": "Team",
             "price": "Price",
             "gw19_xP": "gw19_xP",
+            "set_piece_threat": "set_piece_threat",
         }
     )
 
@@ -58,6 +68,7 @@ def format_table(squad_df: pd.DataFrame) -> str:
         formatters={
             "Price": lambda x: f"{float(x):.1f}",
             "gw19_xP": lambda x: f"{float(x):.2f}",
+            "set_piece_threat": lambda x: f"{float(x):.4f}",
             "Risk_Penalty": lambda x: f"{float(x):.2f}",
         },
     )
@@ -68,6 +79,14 @@ def main() -> None:
         df = pd.read_csv(DATA_PATH)
     except FileNotFoundError:
         sys.exit(f"Data file not found at {DATA_PATH}")
+
+    # Ensure set_piece_threat exists for display (and as a sanity check)
+    if "set_piece_threat" not in df.columns:
+        try:
+            df = DataLoader().enrich_data(df)
+        except Exception:
+            # Non-fatal: proceed without the column if enrichment fails
+            df["set_piece_threat"] = 0.0
 
     optimizer = Optimizer()
     df = _prepare_dataframe(df, optimizer)
