@@ -325,16 +325,20 @@ class Optimizer:
             # Step 4.1: Risk yönetimi (dakika varyansı)
             df['minutes_risk'] = self.calculate_minutes_risk(df)
 
-            def _risk_factor(row: pd.Series) -> float:
-                factor = 1.0
-                if row['minutes_risk'] > self.risk_threshold:
-                    factor *= self.risk_coefficient
-                    if row['team_name'] in self.risk_teams:
-                        factor *= self.team_penalty_multiplier
-                return factor
+            def _risk_multiplier(row: pd.Series) -> float:
+                multiplier = 1.0
 
-            df['risk_factor'] = df.apply(_risk_factor, axis=1)
-            df['base_xP'] = df['base_xP'] * df['risk_factor']
+                # Team penalty applies regardless of individual minutes risk
+                if row['team_name'] in self.risk_teams:
+                    multiplier *= self.team_penalty_multiplier
+
+                # Individual variance penalty
+                if row['minutes_risk'] > self.risk_threshold:
+                    multiplier *= self.risk_coefficient
+
+                return multiplier
+
+            df['risk_multiplier'] = df.apply(_risk_multiplier, axis=1)
             
             # Step 5: Calculate short-term projection (GW19)
             short_term_weeks = self.config['optimizer']['short_term_weeks']
@@ -343,7 +347,7 @@ class Optimizer:
                     x, df_fixtures, fdr_map, short_term_weeks
                 )
             )
-            df['gw19_xP'] = df['base_xP'] * df['gw19_strength']
+            df['gw19_xP'] = df['base_xP'] * df['gw19_strength'] * df['risk_multiplier']
             
             # Step 6: Calculate long-term projection (5 weeks)
             long_term_weeks = self.config['optimizer']['long_term_weeks']
@@ -352,7 +356,7 @@ class Optimizer:
                     x, df_fixtures, fdr_map, long_term_weeks
                 )
             )
-            df['long_term_xP'] = df['base_xP'] * df['gw5_strength']
+            df['long_term_xP'] = df['base_xP'] * df['gw5_strength'] * df['risk_multiplier']
             df['final_5gw_xP'] = df['long_term_xP']
             
             logger.info(f"Metrics calculated for {len(df)} players")
