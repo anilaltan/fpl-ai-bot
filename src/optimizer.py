@@ -340,14 +340,32 @@ class Optimizer:
 
             df['risk_multiplier'] = df.apply(_risk_multiplier, axis=1)
             
-            # Step 5: Calculate short-term projection (GW19)
+            # Step 5: Calculate ensemble projections (Mixture of Experts)
             short_term_weeks = self.config['optimizer']['short_term_weeks']
             df['gw19_strength'] = df['team_name'].apply(
                 lambda x: self.calculate_fixture_strength(
                     x, df_fixtures, fdr_map, short_term_weeks
                 )
             )
-            df['gw19_xP'] = df['base_xP'] * df['gw19_strength'] * df['risk_multiplier']
+
+            # Calculate individual expert scores
+            base_xp_risked = df['base_xP'] * df['risk_multiplier']
+
+            # Expert 1: Technical Score (xG, xA, Form based - traditional approach)
+            df['technical_score'] = base_xp_risked * df['gw19_strength']
+
+            # Expert 2: Market Score (Betting odds based)
+            df['market_score'] = self._calculate_market_score(df)
+
+            # Expert 3: Tactical Score (Matchup advantage + Set piece threat)
+            df['tactical_score'] = self._calculate_tactical_score(df)
+
+            # Ensemble: Weighted voting
+            df['gw19_xP'] = (
+                df['technical_score'] * 0.50 +    # 50% weight to technical
+                df['market_score'] * 0.30 +      # 30% weight to market (odds)
+                df['tactical_score'] * 0.20       # 20% weight to tactical
+            )
             
             # Step 6: Calculate long-term projection (5 weeks)
             long_term_weeks = self.config['optimizer']['long_term_weeks']
@@ -360,11 +378,90 @@ class Optimizer:
             df['final_5gw_xP'] = df['long_term_xP']
             
             logger.info(f"Metrics calculated for {len(df)} players")
+
+            # Debug: Show ensemble breakdown for top players
+            try:
+                top_players = df.nlargest(10, 'gw19_xP')[['web_name', 'position', 'team_name', 'gw19_xP', 'technical_score', 'market_score', 'tactical_score']]
+                print("\n🎯 ENSEMBLE MODEL BREAKDOWN - Top 10 Players by Final xP")
+                print("=" * 90)
+                print("2s")
+                print("-" * 90)
+                for _, player in top_players.iterrows():
+                    print("12s")
+                print("=" * 90)
+                print("💡 Weights: Technical (50%) + Market/Odds (30%) + Tactical (20%)")
+            except Exception as e:
+                logger.debug(f"Ensemble debug print failed: {e}")
+
             return df
             
         except Exception as e:
             logger.error(f"Error calculating metrics: {e}", exc_info=True)
             raise
+
+    def _calculate_market_score(self, df: pd.DataFrame) -> pd.Series:
+        """
+        Calculate market score based on betting odds (Model B: The Bookie).
+
+        Args:
+            df: DataFrame with player data including odds features.
+
+        Returns:
+            Series of market scores.
+        """
+        try:
+            # Base points from odds probabilities
+            goal_prob = df.get('implied_goal_prob', pd.Series(0.0, index=df.index))
+            cs_prob = df.get('implied_cs_prob', pd.Series(0.0, index=df.index))
+
+            # Position-based expected points from odds
+            position_multipliers = {
+                'GK': 4.0,   # Clean sheet focused
+                'DEF': 3.0,  # Clean sheet + occasional goals
+                'MID': 2.5,  # Goals + assists
+                'FWD': 3.5   # Primary goal scorers
+            }
+
+            if 'position' in df.columns:
+                pos_multiplier = df['position'].map(position_multipliers).fillna(2.5)
+            else:
+                pos_multiplier = pd.Series(2.5, index=df.index)
+
+            # Market score = probability-weighted expected points
+            market_score = (goal_prob * pos_multiplier * 0.7) + (cs_prob * pos_multiplier * 0.3)
+
+            return market_score
+
+        except Exception as e:
+            logger.warning(f"Market score calculation failed: {e}")
+            return pd.Series(0.0, index=df.index)
+
+    def _calculate_tactical_score(self, df: pd.DataFrame) -> pd.Series:
+        """
+        Calculate tactical score based on matchup advantage and set piece threat.
+
+        Args:
+            df: DataFrame with player data including tactical features.
+
+        Returns:
+            Series of tactical scores.
+        """
+        try:
+            # Get tactical features
+            matchup = df.get('matchup_advantage', pd.Series(1.0, index=df.index))
+            set_piece = df.get('set_piece_threat', pd.Series(0.0, index=df.index))
+
+            # Tactical score = matchup advantage + set piece contribution
+            tactical_score = matchup + (set_piece * 0.5)  # Set pieces contribute 50% weight
+
+            # Normalize to expected points scale (roughly 0-10 range)
+            tactical_score = tactical_score * 2.0  # Scale up for meaningful contribution
+
+            return tactical_score
+
+        except Exception as e:
+            logger.warning(f"Tactical score calculation failed: {e}")
+            return pd.Series(0.0, index=df.index)
     
     def _create_initial_squad(
         self,

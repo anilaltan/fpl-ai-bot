@@ -456,6 +456,82 @@ class DataLoader:
         except Exception as exc:
             logger.debug("matchup_advantage computation failed: %s", exc)
 
+        # Model B: The Bookie - Betting Odds Integration
+        try:
+            logger.info("🎲 Adding betting odds features (Model B: The Bookie)")
+
+            # Initialize odds columns
+            df["implied_goal_prob"] = 0.0
+            df["implied_cs_prob"] = 0.0
+
+            # Check if real odds exist in dataset
+            has_real_goal_odds = "odds_goal" in df.columns
+            has_real_cs_odds = "odds_cs" in df.columns
+
+            if has_real_goal_odds or has_real_cs_odds:
+                logger.info("📊 Using real betting odds from dataset")
+                if has_real_goal_odds:
+                    df["implied_goal_prob"] = pd.to_numeric(df["odds_goal"], errors="coerce").fillna(0.0)
+                if has_real_cs_odds:
+                    df["implied_cs_prob"] = pd.to_numeric(df["odds_cs"], errors="coerce").fillna(0.0)
+            else:
+                logger.info("🎯 Generating synthetic odds (no real odds found)")
+
+                # Synthetic odds generation
+                # implied_goal_prob = (1 / FDR) * (Player Form) * 0.5
+                # implied_cs_prob = (1 / Opponent FDR) * (Team Defense Strength)
+
+                # Get opponent FDR (we'll use a simplified approach)
+                # For now, use opponent_team to get a basic difficulty rating
+                base_goal_prob = 0.15  # Base probability for scoring
+                base_cs_prob = 0.35    # Base probability for clean sheet
+
+                # Player form factors
+                form = _series_or_zeros("form") / 10.0  # Normalize form (0-10 scale)
+                minutes_factor = np.where(minutes > 0, np.minimum(minutes / 1800, 1.0), 0.0)  # Minutes played factor
+
+                # Position-based adjustments
+                if "position" in df.columns:
+                    pos_factor = np.where(
+                        df["position"].str.upper() == "FWD", 1.5,  # Forwards more likely to score
+                        np.where(df["position"].str.upper() == "MID", 1.2,  # Mids moderate
+                        np.where(df["position"].str.upper() == "DEF", 0.8, 1.0))  # Defs less likely
+                    )
+                else:
+                    pos_factor = pd.Series(1.0, index=df.index)
+
+                # Calculate implied goal probability
+                player_form_factor = (form * 0.3) + (minutes_factor * 0.4) + (pos_factor * 0.3)
+                df["implied_goal_prob"] = base_goal_prob * player_form_factor
+
+                # Calculate implied clean sheet probability
+                # Use a simple team-based approach (would be better with actual FDR data)
+                if "opponent_difficulty" in df.columns:
+                    opp_difficulty = pd.to_numeric(df["opponent_difficulty"], errors="coerce").fillna(3.0)
+                    # Lower FDR (easier opponent) = higher CS probability
+                    cs_factor = 1.0 / opp_difficulty
+                else:
+                    cs_factor = pd.Series(1.0, index=df.index)
+
+                team_defense_factor = np.where(
+                    df["position"].str.upper() == "GK", 2.0,  # Goalkeepers boost CS prob
+                    np.where(df["position"].str.upper() == "DEF", 1.5, 1.0)  # Defenders help CS
+                ) if "position" in df.columns else 1.0
+
+                df["implied_cs_prob"] = base_cs_prob * cs_factor * team_defense_factor
+
+            # Normalize probabilities to 0-1 range
+            df["implied_goal_prob"] = np.clip(df["implied_goal_prob"], 0.0, 1.0)
+            df["implied_cs_prob"] = np.clip(df["implied_cs_prob"], 0.0, 1.0)
+
+            logger.info(f"✅ Odds features added for {len(df)} players")
+
+        except Exception as exc:
+            logger.warning("Betting odds feature generation failed: %s", exc)
+            # Set defaults
+            df["implied_goal_prob"] = 0.15
+            df["implied_cs_prob"] = 0.35
+
         return df
 
     def process_fixtures(self, df_fixtures: pd.DataFrame) -> pd.DataFrame:

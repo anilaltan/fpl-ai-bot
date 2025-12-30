@@ -415,6 +415,17 @@ def main() -> None:
         st.markdown("### Dream Team")
         st.caption("Pitch view + Alpha matrix. Captaincy suggestions: safe / differential / vice.")
 
+        # Ensemble Model Legend
+        with st.expander("🎯 Ensemble Model Açıklaması", expanded=False):
+            st.markdown("""
+            **Mixture of Experts (3 Uzman Model):**
+            - **Tech (50% 🟦)**: xG, xA, Form - Geleneksel istatistikler
+            - **Mkt (30% 🟩)**: Bahis oranları - Piyasa zekası
+            - **Tact (20% 🟥)**: Eşleşme + Duran top - Kısa vadeli taktik
+
+            **Final xP = (Tech × 0.5) + (Mkt × 0.3) + (Tact × 0.2)**
+            """)
+
         if squad is None or getattr(squad, "empty", True):
             st.info("Click **Generate Squad** in the sidebar to build your Dream Team.")
             st.stop()
@@ -523,6 +534,9 @@ def main() -> None:
             "position",
             "price",
             metric_col,
+            "technical_score",
+            "market_score",
+            "tactical_score",
             "set_piece_threat",
             "matchup_advantage",
             "selected_by_percent",
@@ -531,12 +545,64 @@ def main() -> None:
         table_df = squad[display_cols].copy()
         table_df = table_df.sort_values(["position", metric_col], ascending=[True, False])
 
+        # Define metric hint for display
+        metric_hint = "final_5gw_xP" if "final_5gw_xP" in squad.columns else "long_term_xP"
+
+        # Column configuration for ensemble scores
+        column_config = {
+            metric_col: st.column_config.NumberColumn(
+                f"Final xP ({metric_hint})",
+                help=f"Ensemble score: Tech(50%) + Mkt(30%) + Tact(20%)",
+                format="%.2f"
+            ),
+            "technical_score": st.column_config.ProgressColumn(
+                "Tech (50%)",
+                help="Technical Score: xG, xA, Form based",
+                format="%.2f",
+                min_value=0,
+                max_value=15,
+            ),
+            "market_score": st.column_config.ProgressColumn(
+                "Mkt (30%)",
+                help="Market Score: Betting odds based",
+                format="%.2f",
+                min_value=0,
+                max_value=15,
+            ),
+            "tactical_score": st.column_config.ProgressColumn(
+                "Tact (20%)",
+                help="Tactical Score: Matchup + Set pieces",
+                format="%.2f",
+                min_value=0,
+                max_value=15,
+            ),
+            "set_piece_threat": st.column_config.NumberColumn(
+                "Set Piece",
+                format="%.2f"
+            ),
+            "matchup_advantage": st.column_config.NumberColumn(
+                "Matchup",
+                format="%.2f"
+            ),
+            "price": st.column_config.NumberColumn(
+                "£",
+                format="%.1f"
+            )
+        }
+
+        # Legacy styling for backward compatibility
         styled = (
             table_df.style.background_gradient(subset=[metric_col], cmap="Greens")
             .background_gradient(subset=["set_piece_threat"], cmap="Blues")
             .background_gradient(subset=["matchup_advantage"], cmap="Purples")
         )
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        st.dataframe(
+            styled,
+            column_config=column_config,
+            use_container_width=True,
+            hide_index=True
+        )
 
     # -------------------- TAB 2: Transfer Wizard (Premium/Admin) -------------------- #
     with tabs[1]:
@@ -546,6 +612,17 @@ def main() -> None:
             st.stop()
 
         st.caption("Pick your current 15-man squad and let the optimizer suggest the best single transfer.")
+
+        # Ensemble Model Legend
+        with st.expander("🎯 Ensemble Model Açıklaması", expanded=False):
+            st.markdown("""
+            **Mixture of Experts (3 Uzman Model):**
+            - **Tech (50% 🟦)**: xG, xA, Form - Geleneksel istatistikler
+            - **Mkt (30% 🟩)**: Bahis oranları - Piyasa zekası
+            - **Tact (20% 🟥)**: Eşleşme + Duran top - Kısa vadeli taktik
+
+            **Final xP = (Tech × 0.5) + (Mkt × 0.3) + (Tact × 0.2)**
+            """)
 
         # Initialize session state for team defaults
         if 'my_team_defaults' not in st.session_state:
@@ -715,6 +792,9 @@ def main() -> None:
             "position",
             "price",
             metric_col,
+            "technical_score",
+            "market_score",
+            "tactical_score",
             "set_piece_threat",
             "matchup_advantage",
             "selected_by_percent",
@@ -722,6 +802,49 @@ def main() -> None:
         ]
         show_cols = [c for c in show_cols if c in df_exp.columns]
 
+        # Column configuration for ensemble scores
+        column_config = {
+            metric_col: st.column_config.NumberColumn(
+                f"Final xP ({metric_hint})",
+                help=f"Ensemble score: Tech(50%) + Mkt(30%) + Tact(20%)",
+                format="%.2f"
+            ),
+            "technical_score": st.column_config.ProgressColumn(
+                "Tech (50%)",
+                help="Technical Score: xG, xA, Form based",
+                format="%.2f",
+                min_value=0,
+                max_value=15,
+            ),
+            "market_score": st.column_config.ProgressColumn(
+                "Mkt (30%)",
+                help="Market Score: Betting odds based",
+                format="%.2f",
+                min_value=0,
+                max_value=15,
+            ),
+            "tactical_score": st.column_config.ProgressColumn(
+                "Tact (20%)",
+                help="Tactical Score: Matchup + Set pieces",
+                format="%.2f",
+                min_value=0,
+                max_value=15,
+            ),
+            "set_piece_threat": st.column_config.NumberColumn(
+                "Set Piece",
+                format="%.2f"
+            ),
+            "matchup_advantage": st.column_config.NumberColumn(
+                "Matchup",
+                format="%.2f"
+            ),
+            "price": st.column_config.NumberColumn(
+                "£",
+                format="%.1f"
+            )
+        }
+
+        # Legacy styling for backward compatibility
         styled = (
             df_exp[show_cols]
             .head(250)
@@ -729,7 +852,13 @@ def main() -> None:
             .background_gradient(subset=["set_piece_threat"], cmap="Blues")
             .background_gradient(subset=["matchup_advantage"], cmap="Purples")
         )
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        st.dataframe(
+            styled,
+            column_config=column_config,
+            use_container_width=True,
+            hide_index=True
+        )
 
     # -------------------- TAB 4: Chip Strategy --------------------
     with tabs[3]:
