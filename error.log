@@ -1,0 +1,9 @@
+2025-12-30 00:47:48,646 - src.optimizer - ERROR - Error calculating metrics: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+Traceback (most recent call last):
+  File "/root/fpl-test/src/optimizer.py", line 326, in calculate_metrics
+    df['minutes_risk'] = self.calculate_minutes_risk(df)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/fpl-test/src/optimizer.py", line 274, in calculate_minutes_risk
+    if col in row.index and pd.notna(row[col]):
+                            ^^^^^^^^^^^^^^^^^^
+ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
