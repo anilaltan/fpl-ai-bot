@@ -45,7 +45,22 @@ def fetch_merged_gw() -> Tuple[pd.DataFrame, str, str]:
         resp = requests.get(url, timeout=30)
         if resp.status_code == 200:
             logger.info("Download ok for %s", season)
-            return pd.read_csv(StringIO(resp.text)), season, url
+            try:
+                return pd.read_csv(StringIO(resp.text)), season, url
+            except Exception as exc:
+                logger.warning(
+                    "Standard CSV parse failed for %s (%s); retrying with python engine/skip bad lines",
+                    season,
+                    exc,
+                )
+                # More tolerant parsing to handle occasional malformed rows.
+                df = pd.read_csv(
+                    StringIO(resp.text),
+                    engine="python",
+                    on_bad_lines="skip",
+                )
+                logger.info("Parsed with python engine; rows=%d cols=%d", *df.shape)
+                return df, season, url
         errors.append((season, resp.status_code))
         logger.warning("Season %s failed with status %s", season, resp.status_code)
     raise RuntimeError(f"Failed to download merged_gw.csv, attempts: {errors}")
