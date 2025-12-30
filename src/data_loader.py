@@ -303,8 +303,111 @@ class DataLoader:
             'clean_sheets_per_90'
         ]
         df_merged = self._force_numeric(df_merged, numeric_cols, fill_value=0.0)
-        
+
+        # Feature engineering enrichments
+        df_merged = self.enrich_data(df_merged)
+
         return df_merged
+
+    def enrich_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Feature engineering enrichment step(s).
+
+        Adds:
+        - set_piece_threat: Defender Threat Index (DTI) proxy for set-piece goal potential.
+          Computed ONLY for defenders; other positions get 0.0.
+        """
+        if df is None or df.empty:
+            return df
+
+        df = df.copy()
+
+        # Initialize column
+        df["set_piece_threat"] = 0.0
+
+        # Determine defender mask
+        if "position" in df.columns:
+            pos = df["position"].astype(str).str.upper()
+            defender_mask = pos.eq("DEF")
+        elif "element_type" in df.columns:
+            # Fallback: accept both common FPL code (2) and legacy variant (3)
+            et = pd.to_numeric(df["element_type"], errors="coerce").fillna(-1).astype(int)
+            defender_mask = et.isin([2, 3])
+        else:
+            defender_mask = pd.Series(False, index=df.index)
+
+        # Helpers to safely pick / derive per-90 metrics
+        def _series_or_zeros(col: str) -> pd.Series:
+            if col in df.columns:
+                return pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype(float)
+            return pd.Series(0.0, index=df.index, dtype=float)
+
+        minutes = _series_or_zeros("minutes")
+
+        # 1) xG per 90 (prefer npxG_per_90 if available)
+        if "npxG_per_90" in df.columns:
+            xg_p90 = _series_or_zeros("npxG_per_90")
+        elif "xG_per_90" in df.columns:
+            xg_p90 = _series_or_zeros("xG_per_90")
+        else:
+            # FPL native expected goals per 90
+            xg_p90 = _series_or_zeros("expected_goals_per_90")
+
+        # 2) shots per 90
+        if "shots_per_90" in df.columns:
+            shots_p90 = _series_or_zeros("shots_per_90")
+        elif "us_shots" in df.columns:
+            us_shots = _series_or_zeros("us_shots")
+            if (minutes > 0).any():
+                shots_p90 = np.where(minutes > 0, (us_shots / minutes) * 90.0, 0.0)
+                shots_p90 = pd.Series(shots_p90, index=df.index, dtype=float)
+            else:
+                # Fallback (as requested): treat us_shots as already normalized-ish
+                shots_p90 = pd.Series(us_shots / 90.0, index=df.index, dtype=float)
+        else:
+            shots_p90 = pd.Series(0.0, index=df.index, dtype=float)
+
+        # 3) threat per 90 (FPL ICT Threat)
+        if "threat_per_90" in df.columns:
+            threat_p90 = _series_or_zeros("threat_per_90")
+        elif "threat" in df.columns:
+            threat = _series_or_zeros("threat")
+            if (minutes > 0).any():
+                threat_p90 = np.where(minutes > 0, (threat / minutes) * 90.0, 0.0)
+                threat_p90 = pd.Series(threat_p90, index=df.index, dtype=float)
+            else:
+                threat_p90 = pd.Series(threat / 90.0, index=df.index, dtype=float)
+        else:
+            threat_p90 = pd.Series(0.0, index=df.index, dtype=float)
+
+        # DTI formula for defenders only
+        set_piece_threat = (xg_p90 * 0.4) + (shots_p90 * 0.4) + (threat_p90 * 0.2)
+        df.loc[defender_mask, "set_piece_threat"] = (
+            pd.to_numeric(set_piece_threat[defender_mask], errors="coerce")
+            .fillna(0.0)
+            .astype(float)
+        )
+
+        # Debug print: Top 5 defenders by set_piece_threat
+        try:
+            if defender_mask.any():
+                name_cols = [c for c in ["web_name", "team_name", "position"] if c in df.columns]
+                debug_df = df.loc[defender_mask, name_cols].copy()
+                debug_df["set_piece_threat"] = df.loc[defender_mask, "set_piece_threat"].astype(float)
+                debug_df["xg_p90_used"] = xg_p90[defender_mask].astype(float)
+                debug_df["shots_p90_used"] = shots_p90[defender_mask].astype(float)
+                debug_df["threat_p90_used"] = threat_p90[defender_mask].astype(float)
+                debug_df = debug_df.sort_values("set_piece_threat", ascending=False).head(5)
+                print("\n[DEBUG] Top 5 DEF by set_piece_threat:")
+                print(
+                    debug_df.to_string(
+                        index=False, float_format=lambda x: f"{float(x):.4f}"
+                    )
+                )
+        except Exception as exc:
+            logger.debug("set_piece_threat debug print failed: %s", exc)
+
+        return df
 
     def process_fixtures(self, df_fixtures: pd.DataFrame) -> pd.DataFrame:
         """
