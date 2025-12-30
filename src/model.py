@@ -7,8 +7,6 @@ Fantasy Premier League player points using segmented XGBoost regressors.
 
 import logging
 import ast
-import json
-import time
 from typing import Any, Dict, List, Tuple, Optional
 import pandas as pd
 import numpy as np
@@ -27,29 +25,6 @@ except ImportError as e:  # pragma: no cover - environment guard
 
 # Configure logging
 logger = logging.getLogger(__name__)
-
-# region agent log
-DEBUG_LOG_PATH = Path(__file__).parent.parent / '.cursor' / 'debug.log'
-
-
-def agent_log(hypothesis_id: str, message: str, data: Dict[str, Any], *, run_id: str = "run1",
-              location: str = "model.py") -> None:
-    payload = {
-        "sessionId": "debug-session",
-        "runId": run_id,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, default=str) + "\n")
-    except Exception:
-        pass
-# endregion
 
 
 class FPLModel:
@@ -206,21 +181,6 @@ class FPLModel:
             .fillna(0)
             .astype(float)
         )
-
-        # region agent log
-        agent_log(
-            "H13",
-            "prepare_training_data_segment_after_cast",
-            {
-                "object_cols": [
-                    c for c, t in zip(feature_list, train_data[feature_list].dtypes) if t == 'object'
-                ],
-                "rows": len(train_data),
-                "feature_list_size": len(feature_list),
-            },
-            location="model.py:_prepare_training_data_segment",
-        )
-        # endregion
 
         X = train_data[feature_list]
         y = train_data['pts_per_90']

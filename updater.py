@@ -10,30 +10,6 @@ from src.optimizer import Optimizer
 
 logger = logging.getLogger(__name__)
 
-# region agent log
-DEBUG_LOG_PATH = Path(__file__).parent / '.cursor' / 'debug.log'
-
-
-def agent_log(hypothesis_id: str, message: str, data: dict[str, Any], *, run_id: str = "run1",
-              location: str = "updater.py") -> None:
-    payload = {
-        "sessionId": "debug-session",
-        "runId": run_id,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(pd.Timestamp.utcnow().timestamp() * 1000),
-    }
-    try:
-        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, default=str) + "\n")
-    except Exception:
-        pass
-# endregion
-
-# region agent log
 def _to_serializable(obj: Any) -> Any:
     if isinstance(obj, (np.floating, np.float32, np.float64)):
         return float(obj)
@@ -46,22 +22,11 @@ def _to_serializable(obj: Any) -> Any:
     if isinstance(obj, (list, tuple)):
         return [_to_serializable(v) for v in obj]
     return obj
-# endregion
 
 def main(data_dir: Optional[Union[str, Path]] = None) -> Path:
     logger.info("🚀 Güncelleme Başlatılıyor...")
     target_dir = Path(data_dir) if data_dir else Path(__file__).parent / 'data'
     target_dir.mkdir(parents=True, exist_ok=True)
-    # region agent log
-    agent_log(
-        "H11",
-        "updater_start",
-        {
-            "target_dir": str(target_dir),
-        },
-        location="updater.py:start",
-    )
-    # endregion
     
     # 1. Veri Yükle
     loader = DataLoader()
@@ -95,41 +60,10 @@ def main(data_dir: Optional[Union[str, Path]] = None) -> Path:
     # B. Model Test Verileri
     df_validation.to_csv(target_dir / 'model_validation.csv', index=False)
     metrics_serializable = _to_serializable(metrics)
-    # region agent log
-    agent_log(
-        "H12",
-        "metrics_before_dump",
-        {
-            "keys": list(metrics.keys()) if isinstance(metrics, dict) else None,
-            "types": {k: type(v).__name__ for k, v in metrics.items()} if isinstance(metrics, dict) else None,
-        },
-        location="updater.py:metrics_dump:before",
-    )
-    # endregion
     try:
         with open(target_dir / 'model_metrics.json', 'w') as f:
             json.dump(metrics_serializable, f)
-        # region agent log
-        agent_log(
-            "H12",
-            "metrics_dump_success",
-            {
-                "keys": list(metrics_serializable.keys()) if isinstance(metrics_serializable, dict) else None,
-            },
-            location="updater.py:metrics_dump:success",
-        )
-        # endregion
     except Exception as exc:
-        # region agent log
-        agent_log(
-            "H12",
-            "metrics_dump_failure",
-            {
-                "error": str(exc),
-            },
-            location="updater.py:metrics_dump:failure",
-        )
-        # endregion
         raise
     
     # C. Dream Teams (Genel İsimlendirme)

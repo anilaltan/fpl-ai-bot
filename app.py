@@ -1,7 +1,5 @@
 import json
 import logging
-import os
-import time
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -15,31 +13,6 @@ from src.data_loader import DataLoader
 from src.optimizer import Optimizer
 
 logger = logging.getLogger(__name__)
-
-# region agent log
-DEBUG_LOG_PATH = Path(__file__).parent / '.cursor' / 'debug.log'
-
-
-def agent_log(hypothesis_id: str, message: str, data: Dict[str, Any], *, run_id: str = "run1",
-              location: str = "app.py") -> None:
-    """Lightweight NDJSON logger for debug mode (writes to .cursor/debug.log)."""
-    payload = {
-        "sessionId": "debug-session",
-        "runId": run_id,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as log_file:
-            log_file.write(json.dumps(payload) + "\n")
-    except Exception:
-        # Avoid breaking the app if debug logging fails
-        pass
-# endregion
 
 # ============================================================================
 # FUTURISTIC CUSTOM CSS - INSPIRED BY REFERENCE DESIGN
@@ -642,23 +615,6 @@ st.set_page_config(
     }
 )
 
-# region agent log
-agent_log(
-    "H1",
-    "server_config_snapshot",
-    {
-        "server_port": st.get_option("server.port"),
-        "server_address": st.get_option("server.address"),
-        "base_url_path": st.get_option("server.baseUrlPath"),
-        "browser_server_address": st.get_option("browser.serverAddress"),
-        "browser_server_port": st.get_option("browser.serverPort"),
-        "env_PORT": os.environ.get("PORT"),
-        "env_STREAMLIT_SERVER_PORT": os.environ.get("STREAMLIT_SERVER_PORT"),
-    },
-    location="app.py:page_config",
-)
-# endregion
-
 load_custom_css()
 
 # ============================================================================
@@ -704,58 +660,15 @@ REQUIRED_DATA_FILES = [
 def ensure_data_files() -> Tuple[bool, str]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     missing = [f for f in REQUIRED_DATA_FILES if not (DATA_DIR / f).exists()]
-    
-    # region agent log
-    agent_log(
-        "H7",
-        "ensure_data_files_entry",
-        {
-            "missing_initial": missing,
-            "data_dir": str(DATA_DIR),
-        },
-        location="app.py:ensure_data_files:entry",
-    )
-    # endregion
-
     if missing:
         try:
             from updater import main as refresh_data
-            # region agent log
-            agent_log(
-                "H8",
-                "ensure_data_files_trigger_refresh",
-                {
-                    "missing_before_refresh": missing,
-                },
-                location="app.py:ensure_data_files:refresh_start",
-            )
-            # endregion
             refresh_data(data_dir=DATA_DIR)
-            # region agent log
-            agent_log(
-                "H8",
-                "ensure_data_files_refresh_completed",
-                {
-                    "missing_before_refresh": missing,
-                },
-                location="app.py:ensure_data_files:refresh_end",
-            )
-            # endregion
         except Exception as exc:
             logger.error("Automatic data refresh failed: %s", str(exc), exc_info=True)
             return False, str(exc)
     
     remaining = [f for f in REQUIRED_DATA_FILES if not (DATA_DIR / f).exists()]
-    # region agent log
-    agent_log(
-        "H10",
-        "ensure_data_files_remaining",
-        {
-            "remaining_after_refresh": remaining,
-        },
-        location="app.py:ensure_data_files:remaining",
-    )
-    # endregion
     if remaining:
         return False, f"Missing files after refresh: {', '.join(remaining)}"
     
@@ -763,46 +676,13 @@ def ensure_data_files() -> Tuple[bool, str]:
 
 @st.cache_data
 def load_files() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, Any], Dict[str, Any]]:
-    # region agent log
-    agent_log(
-        "H5",
-        "load_files_entry",
-        {
-            "data_dir": str(DATA_DIR),
-            "required_files": REQUIRED_DATA_FILES,
-        },
-        location="app.py:load_files:entry",
-    )
-    # endregion
-
     ready, error_msg = ensure_data_files()
-    # region agent log
-    agent_log(
-        "H6",
-        "ensure_data_files_result",
-        {
-            "ready": ready,
-            "error_msg": error_msg,
-        },
-        location="app.py:load_files:ensure_result",
-    )
-    # endregion
     if not ready:
         st.error("❌ Veri dosyaları bulunamadı ve otomatik güncelleme başarısız oldu. Lütfen sunucuda `python updater.py` komutunu çalıştırın.")
         logger.error("Data files missing: %s", error_msg)
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}, {'name': 'GW?', 'id': 0, 'deadline': '-'}
     
     try:
-        # region agent log
-        agent_log(
-            "H6",
-            "load_files_read_start",
-            {
-                "data_dir": str(DATA_DIR),
-            },
-            location="app.py:load_files:read_start",
-        )
-        # endregion
         all_players = pd.read_csv(DATA_DIR / 'all_players.csv')
         
         try: dt_short = pd.read_csv(DATA_DIR / 'dream_team_short.csv')
@@ -816,22 +696,6 @@ def load_files() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame
         
         with open(DATA_DIR / 'model_metrics.json', 'r') as f: metrics = json.load(f)
         with open(DATA_DIR / 'metadata.json', 'r') as f: meta = json.load(f)
-        
-        # region agent log
-        agent_log(
-            "H6",
-            "load_files_read_success",
-            {
-                "all_players_rows": len(all_players.index) if isinstance(all_players, pd.DataFrame) else None,
-                "dt_short_rows": len(dt_short.index) if isinstance(dt_short, pd.DataFrame) else None,
-                "dt_long_rows": len(dt_long.index) if isinstance(dt_long, pd.DataFrame) else None,
-                "df_validation_rows": len(df_validation.index) if isinstance(df_validation, pd.DataFrame) else None,
-                "metrics_keys": list(metrics.keys()) if isinstance(metrics, dict) else None,
-                "meta_keys": list(meta.keys()) if isinstance(meta, dict) else None,
-            },
-            location="app.py:load_files:read_success",
-        )
-        # endregion
         return all_players, dt_short, dt_long, df_validation, metrics, meta
     except Exception as exc:
         logger.error("Data load failed: %s", str(exc), exc_info=True)
@@ -839,22 +703,6 @@ def load_files() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}, {'name': 'GW?', 'id': 0, 'deadline': '-'}
 
 df_all, df_short, df_long, df_val, metrics, meta = load_files()
-
-# region agent log
-agent_log(
-    "H4",
-    "data_load_snapshot",
-    {
-        "df_all_rows": len(df_all.index),
-        "df_short_rows": len(df_short.index),
-        "df_long_rows": len(df_long.index),
-        "df_val_rows": len(df_val.index),
-        "metrics_keys": sorted(list(metrics.keys())) if isinstance(metrics, dict) else [],
-        "meta_keys": sorted(list(meta.keys())) if isinstance(meta, dict) else [],
-    },
-    location="app.py:data_load",
-)
-# endregion
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -898,17 +746,6 @@ def display_locked_feature(feature_name: str) -> None:
 # MAIN APPLICATION
 # ============================================================================
 def main() -> None:
-    # region agent log
-    agent_log(
-        "H2",
-        "main_entry",
-        {
-            "session_state_keys": sorted(list(st.session_state.keys())),
-            "query_params_present": bool(st.experimental_get_query_params()),
-        },
-        location="app.py:main_entry",
-    )
-    # endregion
     # --- LOGIN ---
     login_result = authenticator.login(location='main')
     
@@ -924,19 +761,6 @@ def main() -> None:
             authentication_status = False
         else:
             authentication_status = None
-
-    # region agent log
-    agent_log(
-        "H3",
-        "authentication_status_snapshot",
-        {
-            "authentication_status": authentication_status,
-            "session_has_auth_key": 'authentication_status' in st.session_state,
-            "session_has_username": 'username' in st.session_state,
-        },
-        location="app.py:auth",
-    )
-    # endregion
 
     if authentication_status is False:
         st.error('❌ Username or password is incorrect')
