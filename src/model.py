@@ -131,11 +131,9 @@ class FPLModel:
             DataFrame with encoded features ready for model.
         """
         df_encoded = pd.get_dummies(df, columns=['position'], prefix='pos')
-        
-        # Ensure all required features exist
-        for feature in self.features:
-            if feature not in df_encoded.columns:
-                df_encoded[feature] = 0
+
+        # Pre-flight: feature list must exist exactly
+        self._preflight_feature_check(df_encoded, self.features, stage="prepare_features")
         
         # Fill missing values with 0 and force numeric dtype
         df_encoded[self.features] = (
@@ -147,18 +145,42 @@ class FPLModel:
         
         return df_encoded
     
-    def _ensure_feature_columns(self, df: pd.DataFrame, feature_list: List[str]) -> pd.DataFrame:
-        """Feature listindeki tüm sütunların DataFrame'de var olduğundan emin olur."""
-        for feature in feature_list:
-            if feature not in df.columns:
-                df[feature] = 0
-        df[feature_list] = df[feature_list].fillna(0)
+    def _preflight_feature_check(
+        self,
+        df: pd.DataFrame,
+        feature_list: List[str],
+        stage: str = "feature_check"
+    ) -> None:
+        """Checks that all required features are present before training/prediction."""
+        missing = [f for f in feature_list if f not in df.columns]
+        if missing:
+            raise ValueError(f"[{stage}] Eksik feature sütunları: {missing}")
+
+    def _ensure_feature_columns(
+        self,
+        df: pd.DataFrame,
+        feature_list: List[str],
+        stage: str
+    ) -> pd.DataFrame:
+        """
+        Feature listindeki tüm sütunların DataFrame'de var olduğundan emin olur ve
+        numerik tipe zorlar. Eksik sütun varsa ValueError fırlatır.
+        """
+        self._preflight_feature_check(df, feature_list, stage=stage)
+        df = df.copy()
+        df[feature_list] = (
+            df[feature_list]
+            .apply(pd.to_numeric, errors='coerce')
+            .fillna(0.0)
+            .astype(float)
+        )
         return df
 
     def _prepare_training_data_segment(
         self,
         df_encoded: pd.DataFrame,
-        feature_list: List[str]
+        feature_list: List[str],
+        stage_name: str = "train_segment"
     ) -> Tuple[pd.DataFrame, pd.Series]:
         """Segment bazlı eğitim datasını hazırlar."""
         min_minutes = self.config['model']['min_minutes_for_training']
@@ -173,13 +195,8 @@ class FPLModel:
         train_data = train_data.replace([np.inf, -np.inf], np.nan)
         train_data = train_data.dropna(subset=['pts_per_90'])
 
-        train_data = self._ensure_feature_columns(train_data, feature_list)
-        # Force numeric dtypes for XGBoost (avoid object columns like 'creativity'/'threat')
-        train_data[feature_list] = (
-            train_data[feature_list]
-            .apply(pd.to_numeric, errors='coerce')
-            .fillna(0)
-            .astype(float)
+        train_data = self._ensure_feature_columns(
+            train_data, feature_list, stage=f"train:{stage_name}"
         )
 
         X = train_data[feature_list]
@@ -192,10 +209,13 @@ class FPLModel:
         df_segment: pd.DataFrame,
         feature_list: List[str],
         model_params: Dict,
-        meta_df: pd.DataFrame
+        meta_df: pd.DataFrame,
+        stage_name: str
     ) -> Tuple[XGBRegressor, Dict, pd.DataFrame]:
         """Verilen segment (DEF/GK veya MID/FWD) için modeli eğitir ve doğrular."""
-        X, y = self._prepare_training_data_segment(df_segment, feature_list)
+        X, y = self._prepare_training_data_segment(
+            df_segment, feature_list, stage_name=stage_name
+        )
 
         if len(X) == 0:
             raise ValueError("Segment için eğitim datası bulunamadı.")
@@ -229,6 +249,57 @@ class FPLModel:
             validation_df = validation_df.join(meta_df.loc[validation_df.index, available], how='left')
 
         return model, metrics, validation_df
+
+    def predict_points(
+        self,
+        model: XGBRegressor,
+        df_segment: pd.DataFrame,
+        feature_list: List[str],
+        segment_name: str
+    ) -> np.ndarray:
+        """
+        Tahmin öncesi veri ve sonuç istatistiklerini loglar.
+        Pre-flight kontrol, dtype zorlaması ve scaler doğrulaması içerir.
+        """
+        checked_df = self._ensure_feature_columns(
+            df_segment, feature_list, stage=f"predict:{segment_name}"
+        )
+        input_data = checked_df[feature_list]
+
+        print(f"[DEBUG][{segment_name}] Input head:\n{input_data.head()}")
+        print(f"[DEBUG][{segment_name}] Input describe():\n{input_data.describe(include='all')}")
+
+        scaler = getattr(self, "scaler", None)
+        if scaler is not None:
+            try:
+                sample_scaled = scaler.transform(input_data.iloc[: min(len(input_data), 5)])
+                print(
+                    f"[DEBUG][{segment_name}] Scaler sample min/max: "
+                    f"min={sample_scaled.min():.4f}, max={sample_scaled.max():.4f}"
+                )
+            except Exception as exc:
+                print(f"[DEBUG][{segment_name}] Scaler kontrolü hatası: {exc}")
+        else:
+            print(f"[DEBUG][{segment_name}] Scaler tanımlı değil, kontrol atlandı.")
+
+        predictions = model.predict(input_data)
+
+        print(f"[DEBUG][{segment_name}] Prediction describe():\n{pd.Series(predictions).describe()}")
+        print(f"[DEBUG][{segment_name}] İlk 5 tahmin: {predictions[:5]}")
+
+        if hasattr(model, "feature_importances_"):
+            importances = pd.Series(model.feature_importances_, index=feature_list)
+            print(
+                f"[DEBUG][{segment_name}] Feature importances (top 20):\n"
+                f"{importances.sort_values(ascending=False).head(20)}"
+            )
+            if (importances == 0).all():
+                print(
+                    f"[DEBUG][{segment_name}] WARNING: Feature importances are all zero. "
+                    "Model eğitimi başarısız olabilir."
+                )
+
+        return predictions
 
     def _compute_volatility_index(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -313,12 +384,20 @@ class FPLModel:
 
             # 3. Defensive model
             self.def_model, def_metrics, def_val = self._train_segment_model(
-                df_def, self.defensive_features, self.def_model_params, df_encoded
+                df_def,
+                self.defensive_features,
+                self.def_model_params,
+                df_encoded,
+                stage_name="defensive"
             )
 
             # 4. Offensive model
             self.off_model, off_metrics, off_val = self._train_segment_model(
-                df_off, self.offensive_features, self.off_model_params, df_encoded
+                df_off,
+                self.offensive_features,
+                self.off_model_params,
+                df_encoded,
+                stage_name="offensive"
             )
 
             # 5. Tahminler
@@ -329,15 +408,17 @@ class FPLModel:
 
             # Defensive predictions
             if not df_def.empty:
-                df_def = self._ensure_feature_columns(df_def, self.defensive_features)
-                preds_def = self.def_model.predict(df_def[self.defensive_features])
+                preds_def = self.predict_points(
+                    self.def_model, df_def, self.defensive_features, segment_name="defensive"
+                )
                 df_encoded.loc[defensive_mask, 'predicted_xP_per_90'] = preds_def
                 df_encoded.loc[defensive_mask, 'predicted_xP_def'] = preds_def
 
             # Offensive predictions + Upside
             if not df_off.empty:
-                df_off = self._ensure_feature_columns(df_off, self.offensive_features)
-                preds_off = self.off_model.predict(df_off[self.offensive_features])
+                preds_off = self.predict_points(
+                    self.off_model, df_off, self.offensive_features, segment_name="offensive"
+                )
                 df_encoded.loc[offensive_mask, 'predicted_xP_per_90'] = preds_off
                 df_encoded.loc[offensive_mask, 'predicted_xP_off'] = preds_off
 

@@ -65,6 +65,28 @@ class DataLoader:
             logger.error("Invalid YAML in config file: %s", exc)
             raise exc
 
+    def _force_numeric(
+        self,
+        df: pd.DataFrame,
+        columns: List[str],
+        fill_value: float = 0.0
+    ) -> pd.DataFrame:
+        """
+        Belirtilen sütunları zorla float'a çevirir; hatalı değerleri NaN -> fill_value yapar.
+        """
+        df = df.copy()
+        cols = [c for c in columns if c in df.columns]
+        if not cols:
+            return df
+
+        df[cols] = (
+            df[cols]
+            .apply(pd.to_numeric, errors='coerce')
+            .astype(float)
+            .fillna(fill_value)
+        )
+        return df
+
     def _get_understat_season_candidates(self, season: Optional[int] = None) -> List[int]:
         """
         Build a prioritized list of Understat seasons to try when fetching player data.
@@ -267,6 +289,19 @@ class DataLoader:
         
         # Form momentum hesaplama
         df_merged = self.calculate_form_momentum(df_merged)
+
+        # Sayısal kolonları object/string kalmasın diye float'a zorla
+        numeric_cols = [
+            'price', 'form', 'ict_index', 'influence', 'creativity', 'threat',
+            'value_form', 'goals_scored', 'assists', 'clean_sheets', 'saves',
+            'goals_conceded', 'goals_conceded_per_90', 'expected_goals_conceded_per_90',
+            'expected_goals_per_90', 'expected_assists_per_90',
+            'expected_goal_involvements_per_90', 'xG_per_90', 'xA_per_90',
+            'us_xGChain', 'us_xGBuildup', 'us_shots', 'us_key_passes', 'us_xG',
+            'us_xA', 'us_games', 'minutes', 'total_points', 'saves_per_90',
+            'clean_sheets_per_90'
+        ]
+        df_merged = self._force_numeric(df_merged, numeric_cols, fill_value=0.0)
         
         return df_merged
 
