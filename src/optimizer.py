@@ -654,88 +654,239 @@ class Optimizer:
             raise
     
     def suggest_transfer(
-        self, 
-        current_team_df: pd.DataFrame, 
-        all_players_df: pd.DataFrame, 
-        bank_balance: float
-    ) -> Optional[Dict[str, Any]]:
+        self,
+        current_team_df: pd.DataFrame,
+        all_players_df: pd.DataFrame,
+        bank_balance: float,
+        top_n: int = 5
+    ) -> List[Dict[str, Any]]:
         """
-        Suggest the best transfer by comparing current team with available players.
-        
+        Suggest the best transfer options by comparing current team with available players.
+
         Args:
             current_team_df: DataFrame of current team players.
             all_players_df: DataFrame of all available players.
             bank_balance: Current bank balance.
-            
+            top_n: Number of best suggestions to return.
+
         Returns:
-            Dictionary with 'out', 'in', and 'gain' keys, or None if no transfer found.
+            List of dictionaries with 'out', 'in', 'gain', and 'remaining_bank' keys.
+            Empty list if no beneficial transfers found.
         """
-        logger.info("Searching for transfer opportunities")
-        
+        logger.info(f"Searching for top {top_n} transfer opportunities")
+
         try:
             # Remove current team from pool
             pool = all_players_df[
                 ~all_players_df['web_name'].isin(current_team_df['web_name'])
             ].copy()
-            
+
             if pool.empty:
                 logger.warning("No players available for transfer")
-                return None
-            
-            best_transfer = None
-            max_gain = 0.0
-            
+                return []
+
+            suggestions = []
+
             # Try selling each player in current team
             for idx, p_out in current_team_df.iterrows():
                 # Budget = sold player price + bank balance
                 available_budget = p_out['price'] + bank_balance
-                
+
                 # Filter candidates (same position, within budget)
                 candidates = pool[
                     (pool['position'] == p_out['position']) &
                     (pool['price'] <= available_budget)
                 ]
-                
+
                 if candidates.empty:
                     continue
-                
+
                 # Use long_term_xP or final_5gw_xP
                 metric_col = (
-                    'final_5gw_xP' if 'final_5gw_xP' in candidates.columns 
+                    'final_5gw_xP' if 'final_5gw_xP' in candidates.columns
                     else 'long_term_xP'
                 )
-                
+
                 # Remove NaN values
                 candidates = candidates.dropna(subset=[metric_col])
                 if candidates.empty:
                     continue
-                
+
                 # Find best replacement
                 best_in = candidates.sort_values(metric_col, ascending=False).iloc[0]
-                
+
                 # Calculate gain
                 p_out_score = p_out.get(metric_col, 0.0)
                 gain = best_in[metric_col] - p_out_score
-                
-                if gain > max_gain:
-                    max_gain = gain
-                    best_transfer = {
+
+                # Calculate remaining bank after transfer
+                remaining_bank = available_budget - best_in['price']
+
+                # Only add if gain > 0
+                if gain > 0:
+                    suggestions.append({
                         'out': p_out,
                         'in': best_in,
-                        'gain': gain
-                    }
-            
-            if best_transfer:
-                logger.info(
-                    f"Transfer suggestion found: "
-                    f"{best_transfer['out']['web_name']} -> "
-                    f"{best_transfer['in']['web_name']}, gain: {max_gain:.2f}"
-                )
+                        'gain': gain,
+                        'remaining_bank': remaining_bank
+                    })
+
+            # Sort by gain (descending) and take top_n
+            suggestions.sort(key=lambda x: x['gain'], reverse=True)
+            top_suggestions = suggestions[:top_n]
+
+            if top_suggestions:
+                logger.info(f"Found {len(top_suggestions)} beneficial transfer suggestions")
+                for i, s in enumerate(top_suggestions, 1):
+                    logger.info(
+                        f"#{i}: {s['out']['web_name']} -> {s['in']['web_name']}, "
+                        f"gain: {s['gain']:.2f}, bank: {s['remaining_bank']:.1f}"
+                    )
             else:
-                logger.info("No beneficial transfer found")
-            
-            return best_transfer
-            
+                logger.info("No beneficial transfers found")
+
+            return top_suggestions
+
         except Exception as e:
-            logger.error(f"Error suggesting transfer: {e}", exc_info=True)
-            return None
+            logger.error(f"Error suggesting transfers: {e}", exc_info=True)
+            return []
+
+    def analyze_chips(
+        self,
+        current_team_df: pd.DataFrame,
+        all_players_df: pd.DataFrame,
+        gameweek: int = 19
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Analyze FPL chip strategies and provide recommendations.
+
+        Args:
+            current_team_df: DataFrame of current team players.
+            all_players_df: DataFrame of all available players.
+            gameweek: Current gameweek (default: 19 for GW19 analysis).
+
+        Returns:
+            Dictionary with chip analysis results.
+        """
+        logger.info(f"Analyzing chip strategies for GW{gameweek}")
+
+        results = {
+            'WC': {'status': 'Unknown', 'reason': '', 'score': 0.0},
+            'TC': {'status': 'Unknown', 'reason': '', 'score': 0.0},
+            'BB': {'status': 'Unknown', 'reason': '', 'score': 0.0}
+        }
+
+        try:
+            # Determine GW column name
+            gw_col = f'gw{gameweek}_xP'
+            if gw_col not in all_players_df.columns:
+                gw_col = 'gw19_xP'  # fallback
+
+            # TRIPLE CAPTAIN ANALYSIS
+            if gw_col in current_team_df.columns:
+                # Find player with highest gw_xP
+                tc_candidates = current_team_df.dropna(subset=[gw_col])
+                if not tc_candidates.empty:
+                    best_player = tc_candidates.loc[tc_candidates[gw_col].idxmax()]
+                    tc_score = float(best_player.get(gw_col, 0.0) or 0.0)
+
+                    if tc_score > 11.0:
+                        results['TC'] = {
+                            'status': 'Öneriliyor',
+                            'reason': f"{best_player['web_name']} xP'si {tc_score:.1f}, yüksek potansiyel!",
+                            'score': tc_score
+                        }
+                    elif tc_score > 9.0:
+                        results['TC'] = {
+                            'status': 'Düşünülebilir',
+                            'reason': f"{best_player['web_name']} xP'si {tc_score:.1f}, orta seviye potansiyel.",
+                            'score': tc_score
+                        }
+                    else:
+                        results['TC'] = {
+                            'status': 'Bekle',
+                            'reason': f"En yüksek xP {tc_score:.1f}, henüz erken.",
+                            'score': tc_score
+                        }
+
+            # BENCH BOOST ANALYSIS
+            # Identify bench players (conservative: lowest 4 xP players)
+            if gw_col in current_team_df.columns:
+                sorted_team = current_team_df.dropna(subset=[gw_col]).sort_values(gw_col, ascending=True)
+                bench_players = sorted_team.head(4)  # Assume lowest 4 are bench
+                bb_score = float(bench_players[gw_col].sum() or 0.0)
+
+                if bb_score > 18.0:
+                    results['BB'] = {
+                        'status': 'Öneriliyor',
+                        'reason': f"Yedek toplam xP {bb_score:.1f}, güçlü yedekler!",
+                        'score': bb_score
+                    }
+                elif bb_score > 15.0:
+                    results['BB'] = {
+                        'status': 'Düşünülebilir',
+                        'reason': f"Yedek toplam xP {bb_score:.1f}, orta seviye yedekler.",
+                        'score': bb_score
+                    }
+                else:
+                    results['BB'] = {
+                        'status': 'Bekle',
+                        'reason': f"Yedek toplam xP {bb_score:.1f}, henüz erken.",
+                        'score': bb_score
+                    }
+
+            # WILDCARD ANALYSIS
+            try:
+                # Current team total xP
+                current_team_xp = float(current_team_df[gw_col].sum() or 0.0)
+
+                # Solve for optimal team
+                optimal_team = self.solve_dream_team(
+                    all_players_df,
+                    target_metric=gw_col,
+                    budget=100.0  # Standard FPL budget
+                )
+
+                if not optimal_team.empty and gw_col in optimal_team.columns:
+                    optimal_xp = float(optimal_team[gw_col].sum() or 0.0)
+                    opportunity_cost = optimal_xp - current_team_xp
+
+                    if opportunity_cost > 15.0:
+                        results['WC'] = {
+                            'status': 'Öneriliyor',
+                            'reason': f"Kadro verimsiz! Opt: {optimal_xp:.1f}, Mevcut: {current_team_xp:.1f}, Fark: {opportunity_cost:.1f}",
+                            'score': opportunity_cost
+                        }
+                    elif opportunity_cost > 10.0:
+                        results['WC'] = {
+                            'status': 'İzlemede Kal',
+                            'reason': f"Potansiyel var. Opt: {optimal_xp:.1f}, Mevcut: {current_team_xp:.1f}, Fark: {opportunity_cost:.1f}",
+                            'score': opportunity_cost
+                        }
+                    else:
+                        results['WC'] = {
+                            'status': 'Gerek Yok',
+                            'reason': f"Kadro yeterli. Opt: {optimal_xp:.1f}, Mevcut: {current_team_xp:.1f}, Fark: {opportunity_cost:.1f}",
+                            'score': opportunity_cost
+                        }
+                else:
+                    results['WC'] = {
+                        'status': 'Veri Yok',
+                        'reason': 'Optimal kadro hesaplanamadı.',
+                        'score': 0.0
+                    }
+
+            except Exception as e:
+                logger.warning(f"Wildcard analysis failed: {e}")
+                results['WC'] = {
+                    'status': 'Hata',
+                    'reason': f'Analiz başarısız: {str(e)}',
+                    'score': 0.0
+                }
+
+            logger.info(f"Chip analysis completed: WC={results['WC']['status']}, TC={results['TC']['status']}, BB={results['BB']['status']}")
+
+        except Exception as e:
+            logger.error(f"Error analyzing chips: {e}", exc_info=True)
+
+        return results

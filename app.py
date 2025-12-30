@@ -407,7 +407,7 @@ def main() -> None:
     else:
         squad = st.session_state.get("last_squad")
 
-    tab_labels = ["Dream Team", "Transfer Wizard", "Player Explorer"]
+    tab_labels = ["Dream Team", "Transfer Wizard", "Player Explorer", "Chip Strategy"]
     tabs = st.tabs(tab_labels)
 
     # -------------------- TAB 1: Dream Team (Free) -------------------- #
@@ -608,6 +608,10 @@ def main() -> None:
             max_selections=15,
         )
         bank_balance = st.number_input("Bank Balance (£m)", min_value=0.0, max_value=50.0, value=0.0, step=0.1)
+
+        # Number of suggestions slider
+        num_suggestions = st.slider("Öneri Sayısı (Top N)", min_value=1, max_value=10, value=3)
+
         analyze = st.button("Analyze Transfer", type="primary")
 
         if analyze:
@@ -618,35 +622,44 @@ def main() -> None:
             ids = [label_to_id[x] for x in selected]
             current_team_df = df_players[df_players["id"].isin(ids)].copy()
 
-            suggestion = opt.suggest_transfer(current_team_df, df_players, float(bank_balance))
-            if not suggestion:
+            suggestions = opt.suggest_transfer(current_team_df, df_players, float(bank_balance), num_suggestions)
+            if not suggestions:
                 st.info("No beneficial transfer found within your budget.")
                 st.stop()
 
-            p_out = suggestion["out"]
-            p_in = suggestion["in"]
-            gain = float(suggestion.get("gain", 0.0) or 0.0)
-
             metric_hint = "final_5gw_xP" if "final_5gw_xP" in df_players.columns else "long_term_xP"
-            out_xp = float(p_out.get(metric_hint, 0.0) or 0.0)
-            in_xp = float(p_in.get(metric_hint, 0.0) or 0.0)
-            in_ma = float(p_in.get("matchup_advantage", 1.0) or 1.0)
 
-            st.markdown("#### Recommendation")
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.error(
-                    f"🔻 **OUT**: {p_out.get('web_name')} "
-                    f"(£{float(p_out.get('price', 0.0) or 0.0):.1f}, {metric_hint}={out_xp:.2f})"
-                )
-            with c2:
-                st.success(
-                    f"🟢 **IN**: {p_in.get('web_name')} "
-                    f"(£{float(p_in.get('price', 0.0) or 0.0):.1f}, {metric_hint}={in_xp:.2f}, "
-                    f"matchup_adv={in_ma:.2f})"
-                )
-            with c3:
-                st.metric("📈 Net Gain", f"{gain:+.2f}")
+            st.markdown("#### Transfer Recommendations")
+
+            for i, suggestion in enumerate(suggestions, 1):
+                p_out = suggestion["out"]
+                p_in = suggestion["in"]
+                gain = float(suggestion.get("gain", 0.0) or 0.0)
+                remaining_bank = float(suggestion.get("remaining_bank", 0.0) or 0.0)
+
+                out_xp = float(p_out.get(metric_hint, 0.0) or 0.0)
+                in_xp = float(p_in.get(metric_hint, 0.0) or 0.0)
+                in_ma = float(p_in.get("matchup_advantage", 1.0) or 1.0)
+
+                with st.expander(f"**Option #{i}:** 🔴 Sat: {p_out.get('web_name')} → 🟢 Al: {p_in.get('web_name')} | ⚡ Gain: +{gain:.2f}", expanded=(i==1)):
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        st.error(
+                            f"🔻 **OUT**: {p_out.get('web_name')} "
+                            f"(£{float(p_out.get('price', 0.0) or 0.0):.1f}, {metric_hint}={out_xp:.2f})"
+                        )
+
+                    with col2:
+                        st.success(
+                            f"🟢 **IN**: {p_in.get('web_name')} "
+                            f"(£{float(p_in.get('price', 0.0) or 0.0):.1f}, {metric_hint}={in_xp:.2f}, "
+                            f"matchup_adv={in_ma:.2f})"
+                        )
+
+                    with col3:
+                        st.metric("📈 Net Gain", f"{gain:+.2f}")
+                        st.metric("💰 Remaining Bank", f"£{remaining_bank:.1f}")
 
     # -------------------- TAB 3: Player Explorer -------------------- #
     with tabs[2]:
@@ -717,6 +730,122 @@ def main() -> None:
             .background_gradient(subset=["matchup_advantage"], cmap="Purples")
         )
         st.dataframe(styled, use_container_width=True, hide_index=True)
+
+    # -------------------- TAB 4: Chip Strategy --------------------
+    with tabs[3]:
+        st.markdown("### Chip Strategy Advisor")
+        st.caption("FPL chip'lerinizi (Wildcard, Triple Captain, Bench Boost) ne zaman kullanacağınızı analiz eder.")
+
+        # Gameweek selector
+        current_gw = st.selectbox(
+            "Analiz Edilecek Gameweek",
+            options=list(range(1, 39)),
+            index=18,  # Default to GW19
+            help="Hangi haftayı analiz etmek istiyorsunuz?"
+        )
+
+        # Run analysis button
+        analyze_chips = st.button("🔍 Chip'leri Analiz Et", type="primary")
+
+        if analyze_chips:
+            with st.spinner("Chip stratejileri analiz ediliyor..."):
+                # Get user team from session state or show message
+                if 'my_team_defaults' not in st.session_state or not st.session_state['my_team_defaults']:
+                    st.error("⚠️ Önce Transfer Wizard'dan takımınızı seçin veya Team ID ile içe aktarın!")
+                    st.stop()
+
+                # Get selected players
+                selected_names = st.session_state['my_team_defaults']
+                if not selected_names:
+                    st.error("Takım bulunamadı!")
+                    st.stop()
+
+                # Get player data
+                team_df = df_players[df_players['web_name'].isin(selected_names)].copy()
+                if team_df.empty:
+                    st.error("Seçilen oyuncular bulunamadı!")
+                    st.stop()
+
+                # Analyze chips
+                chip_analysis = opt.analyze_chips(team_df, df_players, current_gw)
+
+                # Display results
+                st.markdown("#### 📊 Chip Analiz Sonuçları")
+
+                # Create 4 columns for chips
+                col1, col2, col3, col4 = st.columns(4)
+
+                chips = [
+                    ('WC', 'Wildcard', '🎭', col1),
+                    ('TC', 'Triple Captain', '👑', col2),
+                    ('BB', 'Bench Boost', '🪑', col3),
+                    ('FH', 'Free Hit', '🎯', col4)
+                ]
+
+                for chip_key, chip_name, emoji, col in chips:
+                    with col:
+                        if chip_key in chip_analysis:
+                            analysis = chip_analysis[chip_key]
+                            status = analysis['status']
+                            score = analysis['score']
+                            reason = analysis['reason']
+
+                            # Color coding
+                            if 'Öneriliyor' in status:
+                                color = '🟢'
+                                bg_color = '#d4edda'
+                            elif 'Düşünülebilir' in status or 'İzlemede' in status:
+                                color = '🟡'
+                                bg_color = '#fff3cd'
+                            else:
+                                color = '⚪'
+                                bg_color = '#f8f9fa'
+
+                            st.markdown(
+                                f"""
+                                <div style="background-color: {bg_color}; padding: 10px; border-radius: 5px; text-align: center;">
+                                    <h4>{emoji} {chip_name}</h4>
+                                    <h3 style="color: {'green' if color == '🟢' else 'orange' if color == '🟡' else 'gray'};">{status}</h3>
+                                    <p style="font-size: 12px;">{reason}</p>
+                                </div>
+                                """,
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            # Free Hit placeholder
+                            st.markdown(
+                                f"""
+                                <div style="background-color: #e9ecef; padding: 10px; border-radius: 5px; text-align: center;">
+                                    <h4>{emoji} {chip_name}</h4>
+                                    <h3 style="color: gray;">Yakında</h3>
+                                    <p style="font-size: 12px;">Bu chip henüz analiz edilmiyor</p>
+                                </div>
+                                """,
+                                unsafe_allow_html=True
+                            )
+
+                # Additional insights
+                st.markdown("---")
+                st.markdown("#### 💡 Öneriler")
+
+                wc_status = chip_analysis.get('WC', {}).get('status', '')
+                tc_status = chip_analysis.get('TC', {}).get('status', '')
+                bb_status = chip_analysis.get('BB', {}).get('status', '')
+
+                insights = []
+
+                if 'Öneriliyor' in wc_status:
+                    insights.append("🎭 **Wildcard Zamanı!** Kadronuzun verimi düşük, büyük değişiklikler yapın.")
+                elif 'Öneriliyor' in tc_status:
+                    insights.append("👑 **Triple Captain Şansı!** Yıldız oyuncunuz bu hafta parlayabilir.")
+                elif 'Öneriliyor' in bb_status:
+                    insights.append("🪑 **Bench Boost Uygun!** Yedekleriniz starter'lardan daha iyi performans gösterebilir.")
+
+                if not insights:
+                    insights.append("✅ **Şu Anda Chip Gerekmiyor.** Mevcut kadronuzla devam edin.")
+
+                for insight in insights:
+                    st.info(insight)
 
 
 if __name__ == "__main__":
