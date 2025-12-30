@@ -1,0 +1,42 @@
+{
+  "defensive": [
+    "clean_sheets",
+    "expected_goals_conceded_per_90",
+    "goals_conceded",
+    "goals_conceded_per_90",
+    "minutes",
+    "pos_DEF",
+    "pos_FWD",
+    "pos_GK",
+    "pos_MID",
+    "saves",
+    "us_key_passes",
+    "us_shots",
+    "us_xGBuildup",
+    "us_xGChain",
+    "volatility_index",
+    "xA_per_90",
+    "xG_per_90"
+  ],
+  "offensive": [
+    "assists",
+    "creativity",
+    "expected_assists_per_90",
+    "expected_goal_involvements_per_90",
+    "expected_goals_per_90",
+    "goals_scored",
+    "minutes",
+    "pos_DEF",
+    "pos_FWD",
+    "pos_GK",
+    "pos_MID",
+    "threat",
+    "us_key_passes",
+    "us_shots",
+    "us_xGBuildup",
+    "us_xGChain",
+    "volatility_index",
+    "xA_per_90",
+    "xG_per_90"
+  ]
+}
