@@ -199,14 +199,18 @@ def main() -> None:
     top_actual = results.sort_values("actual_points", ascending=False).head(5)
     display_cols = ["player_name", "actual_points", "predicted_points", "diff", "GW"]
     print("\nTop 5 actual performers in GW18 vs model predictions:")
-    print(top_actual[display_cols].rename(
-        columns={
-            "player_name": "Player",
-            "actual_points": "Actual",
-            "predicted_points": "Predicted",
-            "diff": "Diff",
-        }
-    ).to_string(index=False, float_format=lambda x: f\"{x:.2f}\"))  # type: ignore
+    print(
+        top_actual[display_cols]
+        .rename(
+            columns={
+                "player_name": "Player",
+                "actual_points": "Actual",
+                "predicted_points": "Predicted",
+                "diff": "Diff",
+            }
+        )
+        .to_string(index=False, float_format=lambda x: f"{x:.2f}")
+    )
 
 
 if __name__ == "__main__":
