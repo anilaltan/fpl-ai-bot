@@ -492,10 +492,53 @@ class Optimizer:
             if budget is None:
                 budget = self.config['optimizer']['budget']
             
+            # Work on a copy to avoid mutating upstream data
+            work_df = df.copy()
+            
+            # Mandatory injury filter: drop players unlikely to feature
+            if 'chance_of_playing_next_round' in work_df.columns:
+                work_df['chance_of_playing_next_round'] = pd.to_numeric(
+                    work_df['chance_of_playing_next_round'], errors='coerce'
+                )
+                before_filter = len(work_df)
+                work_df = work_df[
+                    work_df['chance_of_playing_next_round'].isna() |
+                    (work_df['chance_of_playing_next_round'] >= 75.0)
+                ]
+                dropped = before_filter - len(work_df)
+                if dropped > 0:
+                    logger.info(
+                        "Injury filter removed %d players with <75%% chance to play",
+                        dropped
+                    )
+            
+            if target_metric not in work_df.columns:
+                logger.warning(
+                    "Target metric %s not found in dataframe columns", target_metric
+                )
+                return pd.DataFrame()
+            
+            # Ensure numeric types for optimization columns
+            work_df[target_metric] = pd.to_numeric(work_df[target_metric], errors='coerce')
+            work_df['price'] = pd.to_numeric(work_df['price'], errors='coerce')
+            
+            # Drop rows without required numeric values
+            work_df = work_df.dropna(subset=[target_metric, 'price'])
+            
+            # Captaincy-aware bias: gently upweight premium picks (captain potential)
+            premium_price_threshold = 12.0
+            captaincy_bonus = 1.2  # Acts like adding best-captain upside without hard locks
+            metric_col = f"{target_metric}_captaincy_weighted"
+            work_df[metric_col] = work_df[target_metric] * np.where(
+                work_df['price'] >= premium_price_threshold,
+                captaincy_bonus,
+                1.0
+            )
+            
             # Prepare player pool
-            pool = df.drop_duplicates(
+            pool = work_df.drop_duplicates(
                 subset=['web_name', 'team_name']
-            ).sort_values(target_metric, ascending=False).copy()
+            ).sort_values(metric_col, ascending=False).copy()
             
             if pool.empty:
                 logger.warning("No players available for squad building")
@@ -503,7 +546,7 @@ class Optimizer:
             
             # Create initial squad
             squad_df, pos_counts, team_counts, current_cost = self._create_initial_squad(
-                pool, target_metric
+                pool, metric_col
             )
             
             if squad_df.empty:
@@ -516,7 +559,7 @@ class Optimizer:
             
             while current_cost > budget and iter_count < max_iterations:
                 best_swap = self._find_best_swap(
-                    squad_df, pool, team_counts, target_metric
+                    squad_df, pool, team_counts, metric_col
                 )
                 
                 if best_swap:
