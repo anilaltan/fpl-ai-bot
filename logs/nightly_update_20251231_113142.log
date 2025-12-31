@@ -1,0 +1,162 @@
+📊 Starting data update process...
+📁 Working directory: /root/fpl-test
+📝 Log file: logs/nightly_update_20251231_113142.log
+✅ Virtual environment activated
+🚀 Running updater.py...
+
+[DEBUG] Top 10 players by set_piece_threat:
+   web_name team_name position  set_piece_threat
+   Dragusin     Spurs      DEF           14.4000
+      Lacey   Man Utd      MID           13.5000
+  Kostoulas  Brighton      FWD           10.8557
+     Dowman   Arsenal      MID            8.6667
+    Solanke     Spurs      FWD            8.2581
+    Haaland  Man City      FWD            8.2423
+     Barnes   Burnley      FWD            8.0000
+       Raúl    Fulham      FWD            7.5862
+B.Fernandes   Man Utd      MID            7.5197
+     Palmer   Chelsea      MID            7.4399
+
+[DEBUG] Top 5 players by matchup_advantage:
+  web_name team_name position opponent_team  matchup_advantage
+   Scarles  West Ham      DEF        Wolves             1.4983
+    Todibo  West Ham      DEF        Wolves             1.4983
+Mavropanos  West Ham      DEF        Wolves             1.4983
+    Kilman  West Ham      DEF        Wolves             1.4983
+     Diouf  West Ham      DEF        Wolves             1.4983
+✅ 779 oyuncu için fixture bilgileri eklendi.
+Model Beklentisi: ['clean_sheets', 'expected_goals_conceded_per_90', 'goals_conceded', 'goals_conceded_per_90', 'minutes']...
+Gelen Veri Sütunları: ['can_transact', 'can_select', 'chance_of_playing_next_round', 'chance_of_playing_this_round', 'code']...
+[DEBUG][defensive] Input head:
+   clean_sheets  expected_goals_conceded_per_90  ...  xA_per_90  xG_per_90
+0           9.0                            0.72  ...   0.005679        0.0
+1           0.0                            0.00  ...   0.000000        0.0
+2           0.0                            0.00  ...   0.000000        0.0
+3           0.0                            0.00  ...   0.000000        0.0
+4           8.0                            0.59  ...   0.000000        0.0
+
+[5 rows x 17 columns]
+[DEBUG][defensive] Input describe():
+       clean_sheets  expected_goals_conceded_per_90  ...   xA_per_90   xG_per_90
+count    345.000000                      345.000000  ...  345.000000  345.000000
+mean       1.440580                        0.975246  ...    0.028080    0.026877
+std        2.258725                        1.398172  ...    0.060856    0.066328
+min        0.000000                        0.000000  ...    0.000000    0.000000
+25%        0.000000                        0.000000  ...    0.000000    0.000000
+50%        0.000000                        1.110000  ...    0.000000    0.000000
+75%        2.000000                        1.440000  ...    0.031498    0.033416
+max        9.000000                       13.500000  ...    0.603123    0.878816
+
+[8 rows x 17 columns]
+[DEBUG][defensive] Scaler tanımlı değil, kontrol atlandı.
+[DEBUG][defensive] Prediction describe():
+count    345.000000
+mean       4.420567
+std        1.264820
+min        1.195433
+25%        3.418449
+50%        4.814857
+75%        5.538908
+max        8.038732
+dtype: float64
+[DEBUG][defensive] İlk 5 tahmin: [4.1512146 5.411588  5.411588  5.411588  8.038732 ]
+[DEBUG][defensive] Feature importances (top 20):
+goals_conceded_per_90             0.253309
+clean_sheets                      0.201499
+xG_per_90                         0.109257
+goals_conceded                    0.107080
+xA_per_90                         0.076901
+us_xGBuildup                      0.054537
+pos_DEF                           0.051282
+us_shots                          0.039028
+pos_GK                            0.031106
+minutes                           0.025691
+expected_goals_conceded_per_90    0.014789
+us_xGChain                        0.014541
+us_key_passes                     0.012827
+saves                             0.008153
+pos_FWD                           0.000000
+pos_MID                           0.000000
+volatility_index                  0.000000
+dtype: float32
+Model Beklentisi: ['assists', 'creativity', 'expected_assists_per_90', 'expected_goal_involvements_per_90', 'expected_goals_per_90']...
+Gelen Veri Sütunları: ['can_transact', 'can_select', 'chance_of_playing_next_round', 'chance_of_playing_this_round', 'code']...
+[DEBUG][offensive] Input head:
+    assists  creativity  ...  xA_per_90  xG_per_90
+14      6.0       494.0  ...   0.343428   0.403258
+15      2.0       337.4  ...   0.353765   0.117000
+16      0.0       132.2  ...   0.308679   0.215696
+17      0.0        59.7  ...   0.067785   0.442498
+18      4.0       320.6  ...   0.229979   0.423423
+
+[5 rows x 20 columns]
+[DEBUG][offensive] Input describe():
+          assists  creativity  ...   xA_per_90   xG_per_90
+count  434.000000  434.000000  ...  434.000000  434.000000
+mean     0.815668   90.358295  ...    0.080496    0.124794
+std      1.395517  128.235646  ...    0.162330    0.193866
+min      0.000000    0.000000  ...    0.000000    0.000000
+25%      0.000000    0.000000  ...    0.000000    0.000000
+50%      0.000000   26.450000  ...    0.000000    0.016212
+75%      1.000000  139.925000  ...    0.114612    0.192335
+max      8.000000  739.300000  ...    2.223747    1.193421
+
+[8 rows x 20 columns]
+[DEBUG][offensive] Scaler tanımlı değil, kontrol atlandı.
+[DEBUG][offensive] Prediction describe():
+count    434.000000
+mean       4.078176
+std        0.960142
+min        2.222607
+25%        3.582255
+50%        3.670262
+75%        4.487167
+max        9.324710
+dtype: float64
+[DEBUG][offensive] İlk 5 tahmin: [6.2043715 4.7899857 3.5835893 5.073201  6.650324 ]
+[DEBUG][offensive] Feature importances (top 20):
+goals_scored                         0.444263
+expected_goal_involvements_per_90    0.146694
+minutes                              0.094648
+assists                              0.074772
+pos_FWD                              0.036547
+xA_per_90                            0.032566
+matchup_advantage                    0.023775
+xG_per_90                            0.022300
+us_xGChain                           0.018872
+us_xGBuildup                         0.018377
+threat                               0.016774
+pos_MID                              0.014153
+expected_assists_per_90              0.013265
+creativity                           0.013097
+expected_goals_per_90                0.012942
+us_shots                             0.009435
+us_key_passes                        0.007520
+pos_DEF                              0.000000
+pos_GK                               0.000000
+volatility_index                     0.000000
+dtype: float32
+
+🎯 ENSEMBLE MODEL BREAKDOWN - Top 10 Players by Final xP
+==========================================================================================
+2s
+------------------------------------------------------------------------------------------
+12s
+12s
+12s
+12s
+12s
+12s
+12s
+12s
+12s
+12s
+==========================================================================================
+💡 Weights: Technical (50%) + Market/Odds (30%) + Tactical (20%)
+✅ Update completed successfully!
+🔄 Restarting Streamlit service to load new data...
+Warning: The unit file, source configuration file or drop-ins of fpl-streamlit.service changed on disk. Run 'systemctl daemon-reload' to reload units.
+✅ Streamlit service restarted successfully
+🎉 Nightly update completed successfully at Wed Dec 31 11:35:29 AM UTC 2025
+📈 Cleaning up old log files...
+🏁 Script completed at Wed Dec 31 11:35:29 AM UTC 2025

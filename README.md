@@ -38,10 +38,63 @@ pip install -r requirements.txt
 python3 updater.py
 ```
 ### 4. Uygulamayı Başlatın
+
+#### Manuel Çalıştırma
 ```bash
 streamlit run app.py
 ```
-🤖 Model Performansı
-Model, oyuncu dakikalarını, xG (Beklenen Gol), xA (Beklenen Asistan) ve fikstür zorluklarını analiz ederek eğitilmiştir. Güncel başarı metriklerine uygulamanın Model Lab sekmesinden ulaşabilirsiniz.
+
+#### Sistem Servisi Olarak Çalıştırma (Önerilen)
+```bash
+# Servis yönetimi
+./manage_service.sh start    # Başlat
+./manage_service.sh stop     # Durdur
+./manage_service.sh restart  # Yeniden başlat
+./manage_service.sh status   # Durum kontrolü
+./manage_service.sh logs     # Log görüntüleme
+```
+
+**Servis Özellikleri:**
+- ✅ SSH bağlantısı kapansa bile çalışmaya devam eder
+- ✅ Sunucu restart olursa otomatik başlar
+- ✅ Hata durumunda otomatik yeniden başlatılır
+- ✅ Port: 8502
+- ✅ URL: `http://sunucu-ip:8502`
+
+### 🔄 Otomatik Güncellemeler
+
+**Her Gece Saat 02:00'da:**
+- ✅ FPL verileri otomatik güncellenir
+- ✅ Model yeniden eğitilir
+- ✅ Streamlit uygulaması yeniden başlatılır
+- ✅ Log dosyaları tutulur ve 7 günden eski olanlar temizlenir
+
+**Cron Job:** `0 2 * * * /root/fpl-test/scripts/nightly_update.sh`
+
+**Manuel Güncelleme:**
+```bash
+./scripts/nightly_update.sh  # Anında güncelleme
+```
+
+**Log Kontrolü:**
+```bash
+ls logs/                    # Güncelleme logları
+tail logs/nightly_update_*.log  # Son logu görüntüle
+```
+
+## 🤖 Model Performansı
+Model, **Ensemble Learning** yaklaşımı kullanır:
+- **Technical Score (50%)**: xG, xA, Form - Geleneksel istatistikler
+- **Market Score (30%)**: Bahis oranları - Piyasa zekası
+- **Tactical Score (20%)**: Eşleşme + Duran top - Kısa vadeli taktik
+
+Güncel başarı metriklerine uygulamanın Model Lab sekmesinden ulaşabilirsiniz.
+
+## 📊 Özellikler
+- **Ensemble Model**: 3 uzman modelinin ağırlıklı oylaması
+- **Chip Strategy**: Wildcard, Triple Captain, Bench Boost önerileri
+- **Walk-Forward Backtesting**: Veri sızıntısı önleme testi
+- **Real-Time Data**: FPL API entegrasyonu
+- **Auto Team Import**: FPL Team ID ile otomatik takım çekme
 
 Not: Bu proje eğitim amaçlıdır ve yatırım tavsiyesi içermez.
