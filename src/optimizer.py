@@ -13,6 +13,8 @@ import numpy as np
 import yaml
 from pathlib import Path
 
+from src.news_radar import NewsRadar
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -366,6 +368,11 @@ class Optimizer:
                 df['market_score'] * 0.30 +      # 30% weight to market (odds)
                 df['tactical_score'] * 0.20       # 20% weight to tactical
             )
+
+            # Risk yönetimi entegrasyonu
+            radar = NewsRadar()
+            df['availability_score'] = df.apply(radar.calculate_availability_score, axis=1)
+            df['risk_adjusted_xP'] = df['gw19_xP'] * df['availability_score']
             
             # Step 6: Calculate long-term projection (5 weeks)
             long_term_weeks = self.config['optimizer']['long_term_weeks']
@@ -375,7 +382,7 @@ class Optimizer:
                 )
             )
             df['long_term_xP'] = df['base_xP'] * df['gw5_strength'] * df['risk_multiplier']
-            df['final_5gw_xP'] = df['long_term_xP']
+            df['final_5gw_xP'] = df['long_term_xP'] * df['availability_score']  # Risk adjustment for long-term too
             
             logger.info(f"Metrics calculated for {len(df)} players")
 
@@ -564,9 +571,9 @@ class Optimizer:
         return best_swap
     
     def solve_dream_team(
-        self, 
-        df: pd.DataFrame, 
-        target_metric: str = 'gw19_xP', 
+        self,
+        df: pd.DataFrame,
+        target_metric: str = 'risk_adjusted_xP',  # Risk-aware optimization default
         budget: Optional[float] = None
     ) -> pd.DataFrame:
         """
@@ -611,6 +618,22 @@ class Optimizer:
                         "Injury filter removed %d players with <75%% chance to play",
                         dropped
                     )
+
+            # Additional risk filter: drop players with very low availability (< 0.25)
+            if 'availability_score' in work_df.columns:
+                before_risk_filter = len(work_df)
+                work_df = work_df[
+                    work_df['availability_score'].isna()
+                    | (work_df['availability_score'] >= 0.25)  # Çok düşük riskli oyuncuları çıkar
+                ].copy()
+                risk_dropped = before_risk_filter - len(work_df)
+                if risk_dropped > 0:
+                    logger.info(
+                        "Risk filter removed %d players with availability_score < 0.25",
+                        risk_dropped
+                    )
+            else:
+                logger.warning("availability_score column not found, risk filter skipped")
             
             if target_metric not in work_df.columns:
                 logger.warning(

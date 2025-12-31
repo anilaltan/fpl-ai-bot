@@ -5,9 +5,13 @@ from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 import streamlit as st
 import yaml
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
 
 from src.data_loader import DataLoader
 from src.optimizer import Optimizer
+from src.simulator import MonteCarloEngine, simulate_team
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +252,22 @@ def _render_player_card(row: pd.Series, badge: str = "") -> None:
     spt = float(row.get("set_piece_threat", 0.0) or 0.0)
     ma = float(row.get("matchup_advantage", 1.0) or 1.0)
 
+    # Risk yönetimi: availability kontrolü
+    availability_score = float(row.get("availability_score", 1.0) or 1.0)
+    news = str(row.get("news", "")).strip()
+    risk_warning = ""
+
+    if availability_score < 1.0:
+        # Risk seviyesine göre icon rengi
+        if availability_score < 0.5:
+            icon_color = "#ef4444"  # Kırmızı - yüksek risk
+        else:
+            icon_color = "#f59e0b"  # Turuncu - orta risk
+
+        # Tooltip için haber metni hazırla
+        tooltip_text = news if news else f"Availability: {availability_score:.1%}"
+        risk_warning = f'<span title="{tooltip_text}" style="color: {icon_color}; margin-left: 8px;">⚠️</span>'
+
     badges = []
     if badge == "C":
         badges.append('<span class="chip chip-cap">CAPTAIN</span>')
@@ -260,15 +280,15 @@ def _render_player_card(row: pd.Series, badge: str = "") -> None:
     <div class="player-card">
   <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
             <div>
-      <p class="player-name">{name}</p>
+      <p class="player-name">{name}{risk_warning}</p>
       <div class="player-meta">{team} • {pos}</div>
             </div>
     <div>{badges_html}</div>
             </div>
   <div class="stat-row">
     <div class="stat"><div class="k">GW19 xP</div><div class="v">{xp:.2f}</div></div>
+    <div class="stat"><div class="k">Risk Adj</div><div class="v">{availability_score:.1%}</div></div>
     <div class="stat"><div class="k">Set Piece</div><div class="v">{spt:.2f}</div></div>
-    <div class="stat"><div class="k">Matchup</div><div class="v">{ma:.2f}</div></div>
         </div>
     </div>
         """,
@@ -407,7 +427,7 @@ def main() -> None:
     else:
         squad = st.session_state.get("last_squad")
 
-    tab_labels = ["Dream Team", "Transfer Wizard", "Player Explorer", "Chip Strategy"]
+    tab_labels = ["Dream Team", "Transfer Wizard", "Player Explorer", "Chip Strategy", "Simulation Lab"]
     tabs = st.tabs(tab_labels)
 
     # -------------------- TAB 1: Dream Team (Free) -------------------- #
@@ -975,6 +995,349 @@ def main() -> None:
 
                 for insight in insights:
                     st.info(insight)
+
+    # -------------------- TAB 5: Simulation Lab -------------------- #
+    with tabs[4]:
+        st.markdown("### 🎲 Simulation Lab")
+        st.caption("Monte Carlo simülasyonları ile takımınızın olasılıksal performansını analiz edin.")
+
+        # Check if we have player data
+        if df_players is None or df_players.empty:
+            st.error("Oyuncu verisi bulunamadı! Önce verileri yükleyin.")
+            st.stop()
+
+        # Get current team from session state
+        current_team = st.session_state.get('my_team_defaults', [])
+        if not current_team:
+            st.info("💡 Transfer Wizard sekmesinden takımınızı seçin veya Team ID ile içe aktarın.")
+            st.markdown("**Alternatif:** Aşağıdan rastgele bir Dream Team seçebilirsiniz.")
+
+            # Option to use dream team for simulation
+            use_dream_team = st.checkbox("Dream Team ile simülasyon yap")
+            if use_dream_team and squad is not None and not squad.empty:
+                current_team = squad['web_name'].tolist()
+                st.success(f"Dream Team seçildi: {len(current_team)} oyuncu")
+            else:
+                st.stop()
+
+        # Get team data
+        team_df = df_players[df_players['web_name'].isin(current_team)].copy()
+        if team_df.empty:
+            st.error("Seçilen takım oyuncuları bulunamadı!")
+            st.stop()
+
+        st.markdown(f"**Simüle Edilen Takım:** {len(team_df)} oyuncu")
+
+        # Simulation parameters
+        col1, col2 = st.columns(2)
+        with col1:
+            n_simulations = st.slider(
+                "Simülasyon Sayısı",
+                min_value=100,
+                max_value=5000,
+                value=1000,
+                step=100,
+                help="Daha fazla simülasyon = daha doğru sonuçlar (ama daha yavaş)"
+            )
+
+        with col2:
+            n_gameweeks = st.slider(
+                "Gameweek Sayısı",
+                min_value=1,
+                max_value=10,
+                value=5,
+                help="Kaç haftalık performans simüle edilsin?"
+            )
+
+        # Captain selection
+        captain_options = ["Otomatik"] + sorted(team_df['web_name'].tolist())
+        captain_name = st.selectbox(
+            "Kaptan Seçin",
+            options=captain_options,
+            index=0,
+            help="Otomatik seçilirse en yüksek xP'ye sahip oyuncu kaptan yapılır"
+        )
+
+        if captain_name == "Otomatik":
+            captain_name = team_df.loc[team_df['gw19_xP'].idxmax(), 'web_name']
+
+        # Run simulation button
+        run_simulation = st.button("🚀 Simülasyonu Başlat", type="primary")
+
+        if run_simulation:
+            with st.spinner(f"{n_simulations} simülasyon çalışıyor..."):
+                # Create simulation engine
+                engine = MonteCarloEngine(
+                    n_simulations=n_simulations,
+                    n_gameweeks=n_gameweeks,
+                    random_seed=42  # For reproducible results
+                )
+
+                # Run simulation
+                sim_result = engine.simulate_team_performance(
+                    team_df=team_df,
+                    captain_name=captain_name
+                )
+
+            # Display results
+            st.markdown("---")
+            st.markdown("## 📊 Takım Performans Dağılımı")
+
+            # Create histogram
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.hist(sim_result.team_total_points, bins=50, alpha=0.7, color='#38bdf8', edgecolor='black')
+            ax.axvline(sim_result.risk_metrics['mean'], color='red', linestyle='--', linewidth=2, label=f'Ortalama: {sim_result.risk_metrics["mean"]:.1f}')
+            ax.axvline(sim_result.risk_metrics['var_95'], color='orange', linestyle='--', linewidth=2, label=f'VaR 95%: {sim_result.risk_metrics["var_95"]:.1f}')
+            ax.axvline(sim_result.risk_metrics['p95'], color='green', linestyle='--', linewidth=2, label=f'Tavan (P95): {sim_result.risk_metrics["p95"]:.1f}')
+
+            ax.set_xlabel('Toplam Puan')
+            ax.set_ylabel('Frekans')
+            ax.set_title(f'Takım Performans Dağılımı ({n_simulations} Simülasyon)')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+
+            st.pyplot(fig)
+
+            # Risk metrics display
+            st.markdown("### 📈 Risk Metrikleri")
+
+            metrics_col1, metrics_col2, metrics_col3, metrics_col4 = st.columns(4)
+
+            with metrics_col1:
+                st.metric(
+                    "Ortalama Beklenti",
+                    f"{sim_result.risk_metrics['mean']:.1f}",
+                    help="Beklenen ortalama puan"
+                )
+
+            with metrics_col2:
+                st.metric(
+                    "Güvenli Puan (VaR 95%)",
+                    f"{sim_result.risk_metrics['var_95']:.1f}",
+                    help="95% olasılıkla en az bu kadar puan alırsınız"
+                )
+
+            with metrics_col3:
+                st.metric(
+                    "Tavan Puan (Top 5%)",
+                    f"{sim_result.risk_metrics['p95']:.1f}",
+                    help="En iyi 5%'lik senaryoda alacağınız puan"
+                )
+
+            with metrics_col4:
+                st.metric(
+                    "Mega Haul İhtimali",
+                    f"{sim_result.risk_metrics['prob_mega_week']:.1%}",
+                    help="Çok yüksek puan (>15/GW) alma ihtimali"
+                )
+
+            # Additional insights
+            st.markdown("---")
+            st.markdown("### 💡 Risk Analizi")
+
+            risk_level = "Düşük" if sim_result.risk_metrics['std'] < 10 else "Orta" if sim_result.risk_metrics['std'] < 20 else "Yüksek"
+
+            st.info(f"""
+            **Risk Seviyesi: {risk_level}**
+            - Standart Sapma: {sim_result.risk_metrics['std']:.1f}
+            - Tutarlılık Skoru: {sim_result.risk_metrics['consistency_score']:.2f}
+            - Konservatif Tahmin (P10): {sim_result.risk_metrics['p10']:.1f}
+            - Optimistik Tahmin (P90): {sim_result.risk_metrics['p90']:.1f}
+            """)
+
+        # Captaincy Duel Section
+        st.markdown("---")
+        st.markdown("## ⚔️ Kaptanlık Düellosu")
+        st.caption("İki oyuncuyu karşılaştırın ve kaptanlık kararınızı olasılıksal analizle destekleyin.")
+
+        # Duel simulation parameters (independent from main simulation)
+        duel_n_simulations = st.slider(
+            "Düello Simülasyon Sayısı",
+            min_value=100,
+            max_value=2000,
+            value=500,
+            step=100,
+            key="duel_simulations",
+            help="Düello için simülasyon sayısı"
+        )
+
+        duel_n_gameweeks = st.slider(
+            "Düello Gameweek Sayısı",
+            min_value=1,
+            max_value=5,
+            value=3,
+            key="duel_gameweeks",
+            help="Düello için haftalık simülasyon sayısı"
+        )
+
+        # Player selection
+        duel_col1, duel_col2 = st.columns(2)
+
+        with duel_col1:
+            player1_options = ["Seçiniz..."] + sorted(team_df['web_name'].tolist())
+            player1_name = st.selectbox(
+                "1. Oyuncu",
+                options=player1_options,
+                key="duel_player1"
+            )
+
+        with duel_col2:
+            player2_options = ["Seçiniz..."] + sorted(team_df['web_name'].tolist())
+            player2_name = st.selectbox(
+                "2. Oyuncu",
+                options=player2_options,
+                key="duel_player2"
+            )
+
+        # Run duel analysis
+        if player1_name != "Seçiniz..." and player2_name != "Seçiniz..." and player1_name != player2_name:
+            duel_button = st.button("⚔️ Düello Analizini Başlat", type="secondary")
+
+            if duel_button:
+                with st.spinner("Oyuncular karşılaştırılıyor..."):
+                    # Get player data
+                    p1_data = team_df[team_df['web_name'] == player1_name].iloc[0]
+                    p2_data = team_df[team_df['web_name'] == player2_name].iloc[0]
+
+                    player1_info = {
+                        'name': player1_name,
+                        'xp': float(p1_data.get('gw19_xP', 0.0) or 0.0),
+                        'position': str(p1_data.get('position', 'MID'))
+                    }
+
+                    player2_info = {
+                        'name': player2_name,
+                        'xp': float(p2_data.get('gw19_xP', 0.0) or 0.0),
+                        'position': str(p2_data.get('position', 'MID'))
+                    }
+
+                    # Create engine for duel analysis
+                    duel_engine = MonteCarloEngine(
+                        n_simulations=duel_n_simulations,
+                        n_gameweeks=duel_n_gameweeks,
+                        random_seed=42
+                    )
+
+                    # Run comparison
+                    duel_simulations = duel_engine.compare_players(player1_info, player2_info, duel_n_gameweeks)
+                    duel_analysis = duel_engine.analyze_captaincy_duel(
+                        duel_simulations[player1_name],
+                        duel_simulations[player2_name],
+                        player1_name,
+                        player2_name
+                    )
+
+                # Display results
+                st.markdown("### 📊 Düello Sonuçları")
+
+                # Create overlapping density plot
+                fig, ax = plt.subplots(figsize=(12, 6))
+
+                # Captaincy points (2x multiplier)
+                p1_captaincy = duel_simulations[player1_name] * 2
+                p2_captaincy = duel_simulations[player2_name] * 2
+
+                # Create density plots
+                sns.kdeplot(data=p1_captaincy, fill=True, alpha=0.6, color='#ef4444',
+                           label=f'{player1_name} (Kaptan)', ax=ax)
+                sns.kdeplot(data=p2_captaincy, fill=True, alpha=0.6, color='#3b82f6',
+                           label=f'{player2_name} (Kaptan)', ax=ax)
+
+                ax.set_xlabel('Kaptanlık Puanları (2x çarpan ile)')
+                ax.set_ylabel('Yoğunluk')
+                ax.set_title(f'{player1_name} vs {player2_name} - Kaptanlık Performans Dağılımı')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+
+                st.pyplot(fig)
+
+                # Duel statistics
+                st.markdown("### 🏆 Karşılaştırma Metrikleri")
+
+                stats_col1, stats_col2, stats_col3 = st.columns(3)
+
+                with stats_col1:
+                    st.metric(
+                        f"{player1_name} Ortalama",
+                        f"{duel_analysis[player1_name]['mean_captaincy_points']:.1f}",
+                        help="Kaptan olarak ortalama beklenen puan"
+                    )
+                    st.metric(
+                        f"{player2_name} Ortalama",
+                        f"{duel_analysis[player2_name]['mean_captaincy_points']:.1f}",
+                        help="Kaptan olarak ortalama beklenen puan"
+                    )
+
+                with stats_col2:
+                    p1_win_rate = duel_analysis['comparison'][f'{player1_name}_win_rate']
+                    p2_win_rate = duel_analysis['comparison'][f'{player2_name}_win_rate']
+
+                    st.metric(
+                        f"{player1_name} Kazanma Oranı",
+                        f"{p1_win_rate:.1%}",
+                        help="Kaptan olarak diğerini geçme ihtimali"
+                    )
+                    st.metric(
+                        f"{player2_name} Kazanma Oranı",
+                        f"{p2_win_rate:.1%}",
+                        help="Kaptan olarak diğerini geçme ihtimali"
+                    )
+
+                with stats_col3:
+                    p1_mega = duel_analysis[player1_name]['prob_mega_haul']
+                    p2_mega = duel_analysis[player2_name]['prob_mega_haul']
+
+                    st.metric(
+                        f"{player1_name} Mega Haul",
+                        f"{p1_mega:.1%}",
+                        help=">15 puan alma ihtimali (kaptan olarak)"
+                    )
+                    st.metric(
+                        f"{player2_name} Mega Haul",
+                        f"{p2_mega:.1%}",
+                        help=">15 puan alma ihtimali (kaptan olarak)"
+                    )
+
+                # Decision recommendation
+                st.markdown("---")
+                st.markdown("### 💡 Kaptanlık Önerisi")
+
+                p1_mean = duel_analysis[player1_name]['mean_captaincy_points']
+                p2_mean = duel_analysis[player2_name]['mean_captaincy_points']
+                p1_volatility = duel_analysis['comparison']['p1_volatility']
+                p2_volatility = duel_analysis['comparison']['p2_volatility']
+
+                if p1_mean > p2_mean:
+                    winner = player1_name
+                    loser = player2_name
+                    winner_volatility = p1_volatility
+                    loser_volatility = p2_volatility
+                else:
+                    winner = player2_name
+                    loser = player1_name
+                    winner_volatility = p2_volatility
+                    loser_volatility = p1_volatility
+
+                recommendation = f"""
+                **Önerilen Kaptan: {winner}**
+
+                **Neden?**
+                - {winner} ortalama {abs(p1_mean - p2_mean):.1f} puan daha yüksek performans bekliyor
+                - {winner} volatilitesi: {winner_volatility:.1f}, {loser} volatilitesi: {loser_volatility:.1f}
+                """
+
+                if winner_volatility > loser_volatility:
+                    recommendation += f"- **Risk-Sevap Dengesi:** {winner}'ın patlama ihtimali daha yüksek ama daha tutarsız"
+                else:
+                    recommendation += f"- **Güvenilir Seçim:** {winner} daha tutarlı performans sunuyor"
+
+                st.success(recommendation)
+
+        elif player1_name == player2_name and player1_name != "Seçiniz...":
+            st.warning("Lütfen farklı iki oyuncu seçin!")
+
+        else:
+            st.info("Kaptanlık düellosu için iki farklı oyuncu seçin.")
 
 
 if __name__ == "__main__":

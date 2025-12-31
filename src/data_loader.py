@@ -306,6 +306,15 @@ class DataLoader:
             matched_rows.append(res)
             
         df_merged = pd.DataFrame(matched_rows)
+
+        # Sakatlık ve risk yönetimi kolonlarının mevcut olup olmadığını kontrol et
+        availability_cols = ['chance_of_playing_next_round', 'chance_of_playing_this_round', 'news', 'status']
+        missing_availability_cols = [col for col in availability_cols if col not in df_merged.columns]
+        if missing_availability_cols:
+            logger.warning(f"FPL API'den eksik availability kolonları: {missing_availability_cols}")
+        else:
+            logger.info("✅ Availability kolonları FPL verisinde mevcut")
+
         df_merged['us_xG'] = pd.to_numeric(df_merged.get('us_xG', 0), errors='coerce').fillna(0)
         df_merged['us_xA'] = pd.to_numeric(df_merged.get('us_xA', 0), errors='coerce').fillna(0)
         df_merged['us_games'] = pd.to_numeric(df_merged.get('us_games', 0), errors='coerce').fillna(0)
@@ -325,7 +334,9 @@ class DataLoader:
             'expected_goal_involvements_per_90', 'xG_per_90', 'xA_per_90',
             'us_xGChain', 'us_xGBuildup', 'us_shots', 'us_key_passes', 'us_xG',
             'us_xA', 'us_games', 'minutes', 'total_points', 'saves_per_90',
-            'clean_sheets_per_90'
+            'clean_sheets_per_90',
+            # Sakatlık ve risk yönetimi için gerekli kolonlar
+            'chance_of_playing_next_round', 'chance_of_playing_this_round'
         ]
         df_merged = self._force_numeric(df_merged, numeric_cols, fill_value=0.0)
 
