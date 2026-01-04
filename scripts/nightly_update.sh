@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# FPL Nightly Update Script
+# FPL Nightly Update Script - FastAPI/React Architecture
 # This script runs the data update process and handles errors
 
 echo "🌙 FPL Nightly Update Started at $(date)"
@@ -13,7 +13,7 @@ cd /root/fpl-test
 mkdir -p logs
 
 # Log file
-LOG_FILE="logs/nightly_update_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="/var/log/fpl_update.log"
 
 # Redirect all output to log file
 exec > >(tee -i $LOG_FILE)
@@ -28,22 +28,22 @@ source .venv/bin/activate
 echo "✅ Virtual environment activated"
 
 # Run the update
-echo "🚀 Running updater.py..."
-python updater.py
+echo "🚀 Running backend/scripts/updater.py..."
+python backend/scripts/updater.py
 
 UPDATE_EXIT_CODE=$?
 
 if [ $UPDATE_EXIT_CODE -eq 0 ]; then
     echo "✅ Update completed successfully!"
-    echo "🔄 Restarting Streamlit service to load new data..."
+    echo "🔄 Restarting FastAPI backend service to load new data..."
 
-    # Restart the Streamlit service to load new data
-    sudo systemctl restart fpl-streamlit.service
+    # Restart the FastAPI backend service to load new data
+    sudo systemctl restart fpl-backend.service
 
     if [ $? -eq 0 ]; then
-        echo "✅ Streamlit service restarted successfully"
+        echo "✅ FastAPI backend service restarted successfully"
     else
-        echo "❌ Failed to restart Streamlit service"
+        echo "❌ Failed to restart FastAPI backend service"
     fi
 
     echo "🎉 Nightly update completed successfully at $(date)"

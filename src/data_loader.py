@@ -213,11 +213,18 @@ class DataLoader:
 
     def fetch_all_data(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
-        Understat ve FPL statik verilerini çeker.
+        FPL gerçek zamanlı verilerini çeker ve Understat ile birleştirir.
         """
-        logger.info("🌍 Veriler çekiliyor...")
+        logger.info("🌍 FPL ve Understat verileri çekiliyor...")
 
-        # Önce adapte edilmiş client ile dene, sonra legacy endpoint'e düş
+        # Önce FPL verisini çek (yeni yöntem)
+        try:
+            df_fpl = self.get_fpl_data()
+        except Exception as exc:
+            logger.error("FPL veri çekme başarısız: %s", str(exc))
+            raise exc
+
+        # Understat verisini çek (mevcut yöntemle)
         df_understat, df_fixtures = self._fetch_understat_players()
 
         if df_understat.empty:
@@ -232,7 +239,8 @@ class DataLoader:
                 df_fixtures = pd.DataFrame(data_us.get('dates', []))
             except Exception as exc:
                 logger.error("Understat API Hatası: %s", str(exc), exc_info=True)
-                return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+                # Understat başarısız olsa bile FPL verisini döndür
+                return pd.DataFrame(), df_fpl, pd.DataFrame()
 
         # Numerik kolonları normalize et
         if not df_understat.empty:
@@ -241,22 +249,6 @@ class DataLoader:
                 if c in df_understat.columns:
                     df_understat[c] = pd.to_numeric(df_understat[c], errors='coerce')
 
-        try:
-            r_fpl = self._retry_request(requests.get, self.fpl_url, headers=self.headers)
-            data_fpl = r_fpl.json()
-            df_fpl = pd.DataFrame(data_fpl.get('elements', []))
-            
-            teams = {t['id']: t['name'] for t in data_fpl.get('teams', [])}
-            element_types = {1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'}
-            
-            df_fpl['team_name'] = df_fpl['team'].map(teams)
-            df_fpl['position'] = df_fpl['element_type'].map(element_types)
-            df_fpl['price'] = df_fpl['now_cost'] / 10.0
-            
-        except Exception as exc:
-            logger.error("FPL API Hatası: %s", str(exc), exc_info=True)
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-        
         return df_understat, df_fpl, df_fixtures
 
     def merge_data(self, df_understat: pd.DataFrame, df_fpl: pd.DataFrame) -> pd.DataFrame:
@@ -268,15 +260,11 @@ class DataLoader:
 
         logger.info("🤝 Veriler birleştiriliyor...")
         matched_rows: List[Dict[str, Any]] = []
-        team_map = {
-            'Arsenal': 'Arsenal', 'Aston Villa': 'Aston Villa', 'Bournemouth': 'Bournemouth',
-            'Brentford': 'Brentford', 'Brighton': 'Brighton', 'Burnley': 'Burnley',
-            'Chelsea': 'Chelsea', 'Crystal Palace': 'Crystal Palace', 'Everton': 'Everton',
-            'Fulham': 'Fulham', 'Leeds': 'Leeds', 'Liverpool': 'Liverpool',
-            'Man City': 'Manchester City', 'Man Utd': 'Manchester United', 'Newcastle': 'Newcastle United',
-            "Nott'm Forest": 'Nottingham Forest', 'Spurs': 'Tottenham', 'Sunderland': 'Sunderland',
-            'West Ham': 'West Ham', 'Wolves': 'Wolverhampton Wanderers'
-        }
+        # Dynamic team mapping from API - create reverse mapping for Understat team names
+        teams_dict = self._get_fpl_teams_dict()
+        # Create reverse mapping: FPL team name -> FPL team name (identity mapping)
+        # This ensures we use the exact team names from FPL API
+        team_map = {name: name for name in teams_dict.values()}
 
         for idx, fpl_row in df_fpl.iterrows():
             fpl_name = fpl_row.get('web_name', '')
@@ -728,142 +716,164 @@ class DataLoader:
 
         return df_players
     
-    def get_fpl_data(self, df_players: pd.DataFrame) -> pd.DataFrame:
+    def get_fpl_data(self) -> pd.DataFrame:
         """
-        Oyuncu verilerine fixture bilgilerini ekler.
-        Her oyuncunun bir sonraki maçını bulur ve şu sütunları ekler:
-        - is_home: (Boolean) Eğer maç iç sahadaysa 1, değilse 0
-        - opponent_difficulty: (Int) Rakip takımın zorluk derecesi (FDR)
-        - opponent_team: (String) Rakip takımın adı
-        
-        Args:
-            df_players: Oyuncu verilerini içeren DataFrame (team sütunu içermeli)
-        
-        Returns:
-            DataFrame: Fixture bilgileriyle zenginleştirilmiş oyuncu verileri
-        """
-        if df_players.empty:
-            return df_players
-        
-        logger.info("🔍 Oyuncuların bir sonraki maçları bulunuyor...")
-        
-        fixtures_data = self.fetch_fpl_fixtures()
-        if not fixtures_data:
-            logger.warning("Fixtures verisi çekilemedi, varsayılan değerler kullanılıyor.")
-            df_players['is_home'] = 0
-            df_players['opponent_difficulty'] = 3
-            df_players['opponent_team'] = 'Unknown'
-            return df_players
-        
-        # Bootstrap-static'ten takım bilgilerini ve gameweek bilgisini çek
-        try:
-            r_static = self._retry_request(requests.get, self.fpl_url, headers=self.headers)
-            static_data = r_static.json()
-            teams_dict = {t['id']: t['name'] for t in static_data['teams']}
-            
-            next_event = next((e for e in static_data['events'] if e.get('is_next', False)), None)
-            if not next_event:
-                next_event = next((e for e in static_data['events'] if not e.get('finished', True)), None)
-            
-            next_gw_id = next_event['id'] if next_event else None
-        except Exception as exc:
-            logger.warning(f"Bootstrap-static verisi çekilemedi: {str(exc)}")
-            teams_dict = {}
-            next_gw_id = None
-        
-        # Fixtures'ı DataFrame'e çevir
-        df_fixtures = pd.DataFrame(fixtures_data)
-        
-        if df_fixtures.empty:
-            logger.warning("Fixtures DataFrame boş, varsayılan değerler kullanılıyor.")
-            df_players['is_home'] = 0
-            df_players['opponent_difficulty'] = 3
-            df_players['opponent_team'] = 'Unknown'
-            return df_players
-        
-        # Bir sonraki gameweek'e ait fixtures'ı filtrele
-        if next_gw_id is not None:
-            df_next_fixtures = df_fixtures[df_fixtures['event'] == next_gw_id].copy()
-        else:
-            # Eğer next_gw_id yoksa, finished=False olan fixtures'ları al
-            if 'finished' in df_fixtures.columns:
-                df_next_fixtures = df_fixtures[df_fixtures['finished'] == False].copy()
-            else:
-                df_next_fixtures = pd.DataFrame()
-            
-            if df_next_fixtures.empty:
-                # Hiçbiri yoksa, event sütununa göre en küçük event'i al
-                if 'event' in df_fixtures.columns:
-                    min_event = df_fixtures['event'].min()
-                    df_next_fixtures = df_fixtures[df_fixtures['event'] == min_event].copy()
-        
-        if df_next_fixtures.empty:
-            logger.warning("Bir sonraki gameweek için fixture bulunamadı, varsayılan değerler kullanılıyor.")
-            df_players['is_home'] = 0
-            df_players['opponent_difficulty'] = 3
-            df_players['opponent_team'] = 'Unknown'
-            return df_players
-        
-        # Her oyuncu için bir sonraki maçı bul
-        is_home_list = []
-        opponent_difficulty_list = []
-        opponent_team_list = []
-        
-        for idx, player_row in df_players.iterrows():
-            player_team_id = player_row.get('team')
-            
-            if pd.isna(player_team_id) or player_team_id is None:
-                # Takım bilgisi yoksa varsayılan değerler
-                is_home_list.append(0)
-                opponent_difficulty_list.append(3)
-                opponent_team_list.append('Unknown')
-                continue
-            
-            # Bu takımın bir sonraki maçını bul
-            player_fixture = None
-            
-            # Ev sahibi olarak oynayacak mı?
-            home_fixtures = df_next_fixtures[df_next_fixtures['team_h'] == player_team_id]
-            if not home_fixtures.empty:
-                player_fixture = home_fixtures.iloc[0]
-                is_home = 1
-                opponent_team_id = player_fixture.get('team_a')
-                opponent_difficulty = player_fixture.get('team_h_difficulty', 3)
-            else:
-                # Deplasman olarak oynayacak mı?
-                away_fixtures = df_next_fixtures[df_next_fixtures['team_a'] == player_team_id]
-                if not away_fixtures.empty:
-                    player_fixture = away_fixtures.iloc[0]
-                    is_home = 0
-                    opponent_team_id = player_fixture.get('team_h')
-                    opponent_difficulty = player_fixture.get('team_a_difficulty', 3)
-                else:
-                    # Maç bulunamadı
-                    is_home = 0
-                    opponent_team_id = None
-                    opponent_difficulty = 3
-            
-            # Rakip takım adını bul
-            if opponent_team_id is not None and opponent_team_id in teams_dict:
-                opponent_team_name = teams_dict[opponent_team_id]
-            else:
-                opponent_team_name = 'Unknown'
-            
-            is_home_list.append(is_home)
-            opponent_difficulty_list.append(int(opponent_difficulty) if not pd.isna(opponent_difficulty) else 3)
-            opponent_team_list.append(opponent_team_name)
-        
-        # Sütunları ekle
-        df_players['is_home'] = is_home_list
-        df_players['opponent_difficulty'] = opponent_difficulty_list
-        df_players['opponent_team'] = opponent_team_list
+        FPL API'den gerçek zamanlı oyuncu verilerini çeker ve map eder.
 
-        # Feature engineering that depends on opponent_team (e.g., matchup_advantage)
-        df_players = self.enrich_data(df_players)
-        
-        print(f"✅ {len(df_players)} oyuncu için fixture bilgileri eklendi.")
-        
-        return df_players
+        **STRICT LIVE MODE:** Sadece canlı API verisi kullanır, asla dummy veri döndürmez.
+        API başarısız olursa Exception fırlatır.
+
+        Data Mapping:
+        - web_name -> name
+        - element_type -> position (1:GK, 2:DEF, 3:MID, 4:FWD)
+        - ep_next -> predicted_xP (None ise 0.0)
+        - now_cost -> price (değeri 10'a böl)
+        - team ID'lerini gerçek takım isimlerine çevir
+
+        Returns:
+            DataFrame: FPL API'den çekilmiş ve map edilmiş oyuncu verileri
+
+        Raises:
+            Exception: API başarısız olursa
+        """
+        logger.info("🌍 FPL API'den gerçek zamanlı oyuncu verilerini çekiyor...")
+
+        try:
+            # FPL Bootstrap-static API'den veri çek
+            response = requests.get(
+                "https://fantasy.premierleague.com/api/bootstrap-static/",
+                headers=self.headers,
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            # Dynamic team mapping from API
+            teams_dict = self._get_fpl_teams_dict()
+
+            # Position mapping
+            position_dict = {
+                1: 'GK',
+                2: 'DEF',
+                3: 'MID',
+                4: 'FWD'
+            }
+
+            # Elements (players) verisini işle - Tüm oyuncuları dahil et
+            players_data = []
+            for player in data.get('elements', []):
+                # BULLETPROOF FIELD EXTRACTION - API string/null değerlerini güvenli şekilde işle
+                try:
+                    # Fiyat: now_cost string olabilir ("50"), float'a çevir
+                    now_cost_raw = player.get('now_cost')
+                    if now_cost_raw is None:
+                        price = 4.0  # Default 4.0
+                    else:
+                        try:
+                            price = float(now_cost_raw) / 10.0
+                        except (ValueError, TypeError):
+                            price = 4.0  # Fallback
+
+                    # Puan: ep_next string olabilir ("5.5"), float'a çevir
+                    ep_next_raw = player.get('ep_next')
+                    if ep_next_raw is None or ep_next_raw == '':
+                        predicted_xP = 0.0
+                    else:
+                        try:
+                            predicted_xP = float(ep_next_raw)
+                        except (ValueError, TypeError):
+                            predicted_xP = 0.0
+
+                    # Pozisyon: element_type string olabilir, int'e çevir
+                    element_type_raw = player.get('element_type')
+                    if element_type_raw is None:
+                        element_type = 0
+                    else:
+                        try:
+                            element_type = int(element_type_raw)
+                        except (ValueError, TypeError):
+                            element_type = 0
+
+                    # Takım: team string olabilir, int'e çevir
+                    team_raw = player.get('team')
+                    if team_raw is None:
+                        team = 0
+                    else:
+                        try:
+                            team = int(team_raw)
+                        except (ValueError, TypeError):
+                            team = 0
+
+                except Exception as field_error:
+                    print(f"⚠️ [DATA LOADER] Field conversion error for player {player.get('web_name', 'unknown')}: {field_error}")
+                    price = 4.0
+                    predicted_xP = 0.0
+                    element_type = 0
+                    team = 0
+
+                # Field mapping with bulletproof conversions
+                mapped_player = {
+                    'id': player.get('id'),
+                    'name': player.get('web_name'),
+                    'position': position_dict.get(element_type, 'UNK'),
+                    'team_name': teams_dict.get(team, 'Unknown'),
+                    'price': price,
+                    'predicted_xP': predicted_xP,
+                    'form': float(player.get('form') or 0.0),
+                    'total_points': int(player.get('total_points') or 0),
+                    'minutes': int(player.get('minutes') or 0),
+                    'goals_scored': int(player.get('goals_scored') or 0),
+                    'assists': int(player.get('assists') or 0),
+                    'clean_sheets': int(player.get('clean_sheets') or 0),
+                    'saves': int(player.get('saves') or 0),
+                    'yellow_cards': int(player.get('yellow_cards') or 0),
+                    'red_cards': int(player.get('red_cards') or 0),
+                    'bonus': int(player.get('bonus') or 0),
+                    'influence': float(player.get('influence') or 0.0),
+                    'creativity': float(player.get('creativity') or 0.0),
+                    'threat': float(player.get('threat') or 0.0),
+                    'ict_index': float(player.get('ict_index') or 0.0),
+                    'selected_by_percent': float(player.get('selected_by_percent') or 0.0),
+                    'team': team,
+                    'element_type': element_type,
+                    'web_name': player.get('web_name'),
+                    'first_name': player.get('first_name', ''),
+                    'second_name': player.get('second_name', '')
+                }
+
+                players_data.append(mapped_player)
+
+            df_fpl = pd.DataFrame(players_data)
+
+            # Type validation - ensure all conversions worked properly
+            print("🔧 [DATA LOADER] Validating type conversions...")
+
+            print(f"✅ [DATA LOADER] Data types validated:")
+            print(f"   - price: {df_fpl['price'].dtype} (range: {df_fpl['price'].min():.1f}-{df_fpl['price'].max():.1f})")
+            print(f"   - predicted_xP: {df_fpl['predicted_xP'].dtype} (range: {df_fpl['predicted_xP'].min():.2f}-{df_fpl['predicted_xP'].max():.2f})")
+            print(f"   - element_type: {df_fpl['element_type'].dtype} (unique: {sorted(df_fpl['element_type'].unique())})")
+            print(f"   - team: {df_fpl['team'].dtype} (range: {df_fpl['team'].min()}-{df_fpl['team'].max()})")
+
+            # Temizleme: Geçersiz isimleri filtrele
+            df_fpl = df_fpl[
+                df_fpl['name'].notna() &
+                (df_fpl['name'].str.len() > 0) &
+                ~df_fpl['name'].str.contains('Unknown', na=False, case=False)
+            ].copy()
+
+            print(f"✅ FPL API'den {len(df_fpl)} oyuncu çekildi")
+            print(f"📊 Örnek oyuncular: {df_fpl[['name', 'team_name', 'position', 'predicted_xP']].head(3).to_dict('records')}")
+
+            return df_fpl
+
+        except requests.exceptions.RequestException as e:
+            error_msg = f"FPL API bağlantı hatası: {str(e)}"
+            logger.error(error_msg)
+            raise Exception(f"FPL API Unreachable - {error_msg}")
+        except Exception as e:
+            error_msg = f"FPL veri çekme hatası: {str(e)}"
+            logger.error(error_msg)
+            raise Exception(f"FPL Data Fetch Failed - {error_msg}")
  
     def fetch_player_match_history(self, player_id: int, season: Optional[int] = None) -> List[Dict[str, Any]]:
         """

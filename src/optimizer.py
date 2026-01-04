@@ -71,44 +71,97 @@ class Optimizer:
             raise
     
     def calculate_team_defensive_strength(
-        self, 
+        self,
         df_fixtures: pd.DataFrame
     ) -> Dict[str, float]:
         """
         Calculate defensive strength (xGA) for each team.
-        
+
         Args:
             df_fixtures: DataFrame containing fixture data with xG information.
-            
+
         Returns:
             Dictionary mapping team names to their average xGA per match.
         """
         try:
             played = df_fixtures[df_fixtures['isResult'] == True].copy()
-            
+
             if played.empty:
                 logger.warning("No played fixtures found for defensive strength calculation")
                 return {}
-            
+
+            # Dynamic column detection for FPL API compatibility - expanded to handle abbreviated columns
+            home_col = ('home_team' if 'home_team' in played.columns else
+                       'team_h' if 'team_h' in played.columns else
+                       'h' if 'h' in played.columns else None)
+            away_col = ('away_team' if 'away_team' in played.columns else
+                       'team_a' if 'team_a' in played.columns else
+                       'a' if 'a' in played.columns else None)
+
+            if not home_col or not away_col:
+                logger.error(f"Could not find home/away team columns. Available columns: {played.columns.tolist()}")
+                return {}
+
+            # Extract team names from columns (handle both string and dict formats)
+            def extract_team_names(series):
+                """Extract team names from a series that may contain strings or dicts"""
+                teams = []
+                for val in series.dropna():
+                    if isinstance(val, dict):
+                        # Extract team name from dict format: {"id": "87", "title": "Liverpool", "short_title": "LIV"}
+                        team_name = val.get('title') or val.get('name') or str(val)
+                        teams.append(team_name)
+                    else:
+                        # Handle string format
+                        teams.append(str(val))
+                return teams
+
+            home_teams = extract_team_names(played[home_col])
+            away_teams = extract_team_names(played[away_col])
+            all_teams = set(home_teams + away_teams)
+
             team_xga: Dict[str, float] = {}
-            all_teams = (
-                set(played['home_team'].dropna().unique()) | 
-                set(played['away_team'].dropna().unique())
-            )
-            
             default_xga = self.config['optimizer']['default_team_xga']
-            
+
             for team in all_teams:
                 if not isinstance(team, str):
                     continue
+
+                # Helper function to check if a dict column contains the team
+                def matches_team(val, target_team):
+                    if isinstance(val, dict):
+                        return (val.get('title') == target_team or
+                               val.get('name') == target_team or
+                               str(val) == target_team)
+                    else:
+                        return str(val) == target_team
+
+                home_matches = played[played[home_col].apply(lambda x: matches_team(x, team))]
+                away_matches = played[played[away_col].apply(lambda x: matches_team(x, team))]
                 
-                home_matches = played[played['home_team'] == team]
-                away_matches = played[played['away_team'] == team]
-                
-                total_xga = (
-                    home_matches['xG_a'].sum() + 
-                    away_matches['xG_h'].sum()
-                )
+                # Extract xGA from xG column (handle both dict and separate column formats)
+                def extract_xga(row, is_home_game):
+                    """Extract expected goals against from a fixture row"""
+                    if isinstance(row.get('xG'), dict):
+                        # Dictionary format: {"h": "2.33", "a": "1.57"}
+                        if is_home_game:
+                            # Team playing home concedes goals from away team
+                            return float(row['xG'].get('a', 0))
+                        else:
+                            # Team playing away concedes goals from home team
+                            return float(row['xG'].get('h', 0))
+                    else:
+                        # Fallback to separate columns if they exist
+                        if is_home_game and 'xG_a' in row.index:
+                            return float(row.get('xG_a', 0))
+                        elif not is_home_game and 'xG_h' in row.index:
+                            return float(row.get('xG_h', 0))
+                        else:
+                            return 0.0
+
+                home_xga = home_matches.apply(lambda row: extract_xga(row, True), axis=1).sum()
+                away_xga = away_matches.apply(lambda row: extract_xga(row, False), axis=1).sum()
+                total_xga = home_xga + away_xga
                 matches = len(home_matches) + len(away_matches)
                 
                 team_xga[team] = (
@@ -172,44 +225,57 @@ class Optimizer:
     ) -> float:
         """
         Calculate fixture strength for a team over specified weeks.
-        
+
+        Eğer fixture verisi yoksa default score döndürür.
+
         Args:
             team_name: Team name in FPL format.
-            df_fixtures: DataFrame containing fixture data.
+            df_fixtures: DataFrame containing fixture data (may be None/empty).
             fdr_map: Dictionary mapping opponent teams to FDR multipliers.
             weeks: Number of weeks to project.
-            
+
         Returns:
             Total fixture strength score.
         """
         try:
+            # Check if fixtures are available
+            if df_fixtures is None or df_fixtures.empty or fdr_map is None or not fdr_map:
+                default_score = self.config['optimizer']['default_fdr_score']
+                return weeks * default_score
+
             mapped_team = self.map_team_name(team_name)
-            
+
+            # Check if required columns exist
+            required_cols = ['home_team', 'away_team', 'isResult']
+            if not all(col in df_fixtures.columns for col in required_cols):
+                default_score = self.config['optimizer']['default_fdr_score']
+                return weeks * default_score
+
             upcoming = df_fixtures[
-                ((df_fixtures['home_team'] == mapped_team) | 
+                ((df_fixtures['home_team'] == mapped_team) |
                  (df_fixtures['away_team'] == mapped_team)) &
                 (df_fixtures['isResult'] == False)
             ].sort_values('datetime').head(weeks)
-            
+
             if upcoming.empty:
                 default_score = self.config['optimizer']['default_fdr_score']
                 return weeks * default_score
-            
+
             home_mult = self.config['optimizer']['home_advantage_multiplier']
             away_mult = self.config['optimizer']['away_disadvantage_multiplier']
-            
+
             score = 0.0
             for _, row in upcoming.iterrows():
                 is_home = row['home_team'] == mapped_team
                 opponent = row['away_team'] if is_home else row['home_team']
-                
+
                 fdr_multiplier = fdr_map.get(opponent, 1.0)
                 site_multiplier = home_mult if is_home else away_mult
-                
+
                 score += fdr_multiplier * site_multiplier
-            
+
             return score
-            
+
         except Exception as e:
             logger.error(
                 f"Error calculating fixture strength for {team_name}: {e}",
@@ -219,29 +285,37 @@ class Optimizer:
             return weeks * default_score
     
     def calculate_base_projection(
-        self, 
+        self,
         df_players: pd.DataFrame
     ) -> pd.DataFrame:
         """
         Calculate base expected points projection for players.
-        
+
         Args:
-            df_players: DataFrame with player data including predicted_xP_per_90.
-            
+            df_players: DataFrame with player data including predicted_xP.
+
         Returns:
             DataFrame with added base_xP column.
         """
         try:
             df = df_players.copy()
-            
+
             games_per_season = self.config['optimizer']['games_per_season']
             max_minutes = self.config['optimizer']['max_minutes_per_game']
-            
+
+            # Use predicted_xP from FPL API (ep_next mapped)
+            if 'predicted_xP' not in df.columns:
+                logger.warning("predicted_xP column missing, using fallback")
+                df['predicted_xP'] = 2.5  # Default FPL expected points
+
+            # Convert predicted_xP to per-90-minute rate (simplified)
+            df['predicted_xP_per_90'] = pd.to_numeric(df['predicted_xP'], errors='coerce').fillna(2.5)
+
             df['avg_mins'] = (df['minutes'] / games_per_season).clip(upper=max_minutes)
             df['base_xP'] = df['predicted_xP_per_90'] * (df['avg_mins'] / max_minutes)
-            
+
             return df
-            
+
         except Exception as e:
             logger.error(f"Error calculating base projection: {e}", exc_info=True)
             raise
@@ -287,121 +361,126 @@ class Optimizer:
         return pd.Series(risks, index=df_players.index, name='minutes_risk')
     
     def calculate_metrics(
-        self, 
-        df_players: pd.DataFrame, 
-        df_fixtures: pd.DataFrame
+        self,
+        df_players: pd.DataFrame,
+        df_fixtures: pd.DataFrame = None
     ) -> pd.DataFrame:
         """
-        Calculate player metrics including short-term and long-term projections.
-        
-        This method orchestrates the calculation of fixture difficulty, base projections,
-        and gameweek-specific expected points.
-        
+        Calculate player metrics including projections.
+
+        Eğer fixture verisi yoksa, sadece predicted_xP ve price bazlı basit optimizasyon yapar.
+
         Args:
             df_players: DataFrame with player data.
-            df_fixtures: DataFrame with fixture data.
-            
+            df_fixtures: DataFrame with fixture data (optional).
+
         Returns:
             DataFrame with added projection columns.
         """
         logger.info("Calculating player metrics and projections")
-        
+
         try:
-            # Step 1: Calculate team defensive strength
-            team_xga = self.calculate_team_defensive_strength(df_fixtures)
-            
-            # Step 2: Calculate FDR map
-            fdr_map = self.calculate_fdr_map(team_xga)
-            
+            # Check if fixtures are available
+            fixtures_available = df_fixtures is not None and not df_fixtures.empty
+
+            if fixtures_available:
+                # Full calculation with fixtures
+                team_xga = self.calculate_team_defensive_strength(df_fixtures)
+                fdr_map = self.calculate_fdr_map(team_xga)
+                logger.info("Using fixture-based FDR calculations")
+            else:
+                # Fallback: no fixture data, use simplified approach
+                fdr_map = {}
+                logger.info("No fixture data available, using simplified FDR (all teams = 1.0)")
+
             # Step 3: Filter players by minimum minutes
             min_minutes = self.config['optimizer']['min_minutes_for_optimization']
             df = df_players[df_players['minutes'] >= min_minutes].copy()
-            
+
             if df.empty:
                 logger.warning("No players meet minimum minutes requirement")
                 return df
-            
+
             # Step 4: Calculate base projection
             df = self.calculate_base_projection(df)
 
-            # Step 4.1: Risk yönetimi (dakika varyansı)
-            df['minutes_risk'] = self.calculate_minutes_risk(df)
+            # Step 4.1: Risk yönetimi (dakika varyansı) - check if column exists
+            if 'minutes_last_five' in df.columns:
+                df['minutes_risk'] = self.calculate_minutes_risk(df)
+            else:
+                df['minutes_risk'] = 0.0  # No risk data available
 
             def _risk_multiplier(row: pd.Series) -> float:
                 multiplier = 1.0
 
                 # Team penalty applies regardless of individual minutes risk
-                if row['team_name'] in self.risk_teams:
+                if 'team_name' in row.index and row['team_name'] in self.risk_teams:
                     multiplier *= self.team_penalty_multiplier
 
-                # Individual variance penalty
-                if row['minutes_risk'] > self.risk_threshold:
+                # Individual variance penalty - only if risk data available
+                if 'minutes_risk' in row.index and row['minutes_risk'] > self.risk_threshold:
                     multiplier *= self.risk_coefficient
 
                 return multiplier
 
             df['risk_multiplier'] = df.apply(_risk_multiplier, axis=1)
-            
-            # Step 5: Calculate ensemble projections (Mixture of Experts)
-            short_term_weeks = self.config['optimizer']['short_term_weeks']
-            df['gw19_strength'] = df['team_name'].apply(
-                lambda x: self.calculate_fixture_strength(
-                    x, df_fixtures, fdr_map, short_term_weeks
+
+            # Step 5: Calculate projections
+            if fixtures_available:
+                # Full ensemble with fixtures
+                short_term_weeks = self.config['optimizer']['short_term_weeks']
+                df['gw19_strength'] = df['team_name'].apply(
+                    lambda x: self.calculate_fixture_strength(
+                        x, df_fixtures, fdr_map, short_term_weeks
+                    )
                 )
-            )
 
-            # Calculate individual expert scores
-            base_xp_risked = df['base_xP'] * df['risk_multiplier']
+                # Calculate individual expert scores
+                base_xp_risked = df['base_xP'] * df['risk_multiplier']
+                df['technical_score'] = base_xp_risked * df['gw19_strength']
+                df['market_score'] = self._calculate_market_score(df)
+                df['tactical_score'] = self._calculate_tactical_score(df)
 
-            # Expert 1: Technical Score (xG, xA, Form based - traditional approach)
-            df['technical_score'] = base_xp_risked * df['gw19_strength']
-
-            # Expert 2: Market Score (Betting odds based)
-            df['market_score'] = self._calculate_market_score(df)
-
-            # Expert 3: Tactical Score (Matchup advantage + Set piece threat)
-            df['tactical_score'] = self._calculate_tactical_score(df)
-
-            # Ensemble: Weighted voting
-            df['gw19_xP'] = (
-                df['technical_score'] * 0.50 +    # 50% weight to technical
-                df['market_score'] * 0.30 +      # 30% weight to market (odds)
-                df['tactical_score'] * 0.20       # 20% weight to tactical
-            )
-
-            # Risk yönetimi entegrasyonu
-            radar = NewsRadar()
-            df['availability_score'] = df.apply(radar.calculate_availability_score, axis=1)
-            df['risk_adjusted_xP'] = df['gw19_xP'] * df['availability_score']
-            
-            # Step 6: Calculate long-term projection (5 weeks)
-            long_term_weeks = self.config['optimizer']['long_term_weeks']
-            df['gw5_strength'] = df['team_name'].apply(
-                lambda x: self.calculate_fixture_strength(
-                    x, df_fixtures, fdr_map, long_term_weeks
+                # Ensemble: Weighted voting
+                df['gw19_xP'] = (
+                    df['technical_score'] * 0.50 +
+                    df['market_score'] * 0.30 +
+                    df['tactical_score'] * 0.20
                 )
-            )
-            df['long_term_xP'] = df['base_xP'] * df['gw5_strength'] * df['risk_multiplier']
-            df['final_5gw_xP'] = df['long_term_xP'] * df['availability_score']  # Risk adjustment for long-term too
-            
-            logger.info(f"Metrics calculated for {len(df)} players")
+            else:
+                # Simplified: just use base_xP with risk adjustment
+                df['gw19_xP'] = df['base_xP'] * df['risk_multiplier']
+                logger.info("Using simplified projection (no fixtures)")
 
-            # Debug: Show ensemble breakdown for top players
+            # Risk yönetimi entegrasyonu - check if NewsRadar data available
             try:
-                top_players = df.nlargest(10, 'gw19_xP')[['web_name', 'position', 'team_name', 'gw19_xP', 'technical_score', 'market_score', 'tactical_score']]
-                print("\n🎯 ENSEMBLE MODEL BREAKDOWN - Top 10 Players by Final xP")
-                print("=" * 90)
-                print("2s")
-                print("-" * 90)
-                for _, player in top_players.iterrows():
-                    print("12s")
-                print("=" * 90)
-                print("💡 Weights: Technical (50%) + Market/Odds (30%) + Tactical (20%)")
-            except Exception as e:
-                logger.debug(f"Ensemble debug print failed: {e}")
+                radar = NewsRadar()
+                df['availability_score'] = df.apply(radar.calculate_availability_score, axis=1)
+                df['risk_adjusted_xP'] = df['gw19_xP'] * df['availability_score']
+            except Exception:
+                df['availability_score'] = 1.0  # Assume all available
+                df['risk_adjusted_xP'] = df['gw19_xP']
+                logger.warning("NewsRadar availability scoring failed, using defaults")
+
+            # Step 6: Calculate long-term projection
+            if fixtures_available:
+                long_term_weeks = self.config['optimizer']['long_term_weeks']
+                df['gw5_strength'] = df['team_name'].apply(
+                    lambda x: self.calculate_fixture_strength(
+                        x, df_fixtures, fdr_map, long_term_weeks
+                    )
+                )
+                df['long_term_xP'] = df['base_xP'] * df['gw5_strength'] * df['risk_multiplier']
+            else:
+                # Simplified long-term: assume same as short-term
+                df['long_term_xP'] = df['base_xP'] * df['risk_multiplier']
+
+            df['final_5gw_xP'] = df['long_term_xP'] * df['availability_score']
+
+            logger.info(f"Metrics calculated for {len(df)} players (fixtures: {fixtures_available})")
 
             return df
-            
+
         except Exception as e:
             logger.error(f"Error calculating metrics: {e}", exc_info=True)
             raise
@@ -600,7 +679,30 @@ class Optimizer:
             
             # Work on a copy to avoid mutating upstream data
             work_df = df.copy()
-            
+
+            # BULLETPROOF DATA SANITIZATION - Optimizasyondan önce kritik sütunları temizle
+            print("🛡️ [OPTIMIZER] Applying data sanitization before optimization...")
+
+            # Kritik sütunlardaki NaN veya Sonsuz değerleri temizle
+            work_df['price'] = work_df['price'].fillna(100.0)  # Fiyat yoksa çok pahalı yap ki seçmesin
+            work_df['predicted_xP'] = work_df['predicted_xP'].fillna(0.0)
+
+            # Diğer optimizasyon için gerekli sütunları da temizle
+            if target_metric in work_df.columns:
+                work_df[target_metric] = pd.to_numeric(work_df[target_metric], errors='coerce').fillna(0.0)
+
+            # Veri tiplerini logla (Debug için)
+            print(f"📊 [OPTIMIZER] Data Types Check:")
+            print(f"   - price: {work_df['price'].dtype} (range: {work_df['price'].min():.1f}-{work_df['price'].max():.1f})")
+            print(f"   - predicted_xP: {work_df['predicted_xP'].dtype} (range: {work_df['predicted_xP'].min():.2f}-{work_df['predicted_xP'].max():.2f})")
+            if target_metric in work_df.columns:
+                print(f"   - {target_metric}: {work_df[target_metric].dtype} (range: {work_df[target_metric].min():.2f}-{work_df[target_metric].max():.2f})")
+
+            # NaN veya infinite değer kontrolü
+            nan_check = work_df[['price', 'predicted_xP', target_metric]].isna().sum()
+            if nan_check.sum() > 0:
+                print(f"⚠️ [OPTIMIZER] Found NaN values: {nan_check.to_dict()}")
+
             # Mandatory injury filter: drop players unlikely to feature
             if 'chance_of_playing_next_round' in work_df.columns:
                 work_df['chance_of_playing_next_round'] = pd.to_numeric(
@@ -714,15 +816,25 @@ class Optimizer:
             # Squad size
             prob += lpSum(x[i] for i in x) == squad_size
 
-            # Position constraints
+            # Position constraints - KATI FPL KURALI: Pozisyon limitleri
+            print(f"⚽ [OPTIMIZER] Applying position constraints:")
             for pos, lim in pos_limits.items():
                 idxs = [i for i in range(len(pool)) if str(pool.loc[i, 'position']) == str(pos)]
+                player_count = len(idxs)
                 prob += lpSum(x[i] for i in idxs) == int(lim)
+                print(f"   ✅ Position '{pos}': {player_count} players available, required = {lim}")
 
-            # Team constraints
+            # Team constraints - KATI FPL KURALI: Max 3 oyuncu aynı takımdan
+            print(f"🏟️ [OPTIMIZER] Applying team constraints: max {max_players_per_team} players per team")
+            team_constraint_count = 0
             for team in pool['team_name'].unique().tolist():
                 idxs = [i for i in range(len(pool)) if pool.loc[i, 'team_name'] == team]
-                prob += lpSum(x[i] for i in idxs) <= max_players_per_team
+                player_count = len(idxs)
+                if player_count > 0:  # Sadece o takımda oyuncu varsa kısıtlama ekle
+                    prob += lpSum(x[i] for i in idxs) <= max_players_per_team
+                    team_constraint_count += 1
+                    print(f"   ✅ Team '{team}': {player_count} players available, constraint <= {max_players_per_team}")
+            print(f"🏟️ [OPTIMIZER] Added {team_constraint_count} team constraints")
 
             # Budget
             prob += lpSum(prices[i] * x[i] for i in x) <= float(budget)
@@ -757,6 +869,16 @@ class Optimizer:
                 cap_row = pool.loc[captain_idxs[0]]
                 captain_points = float(cap_row[target_metric])
                 captain_name = str(cap_row.get('web_name', ''))
+
+            # Takım dağılımını logla - kısıtlama kontrolü için
+            if not squad_df.empty:
+                team_distribution = squad_df['team_name'].value_counts().sort_values(ascending=False)
+                max_from_team = team_distribution.max()
+                print(f"🏆 [OPTIMIZER] Team distribution in squad:")
+                for team, count in team_distribution.items():
+                    status = "❌ VIOLATION!" if count > max_players_per_team else "✅ OK"
+                    print(f"   {team}: {count} players {status}")
+                print(f"🏆 [OPTIMIZER] Max players from any team: {max_from_team} (limit: {max_players_per_team})")
 
             logger.info(
                 "Dream team solved (ILP): %d players, cost=%.2f, base_points=%.2f, captain=%s (+%.2f)",
