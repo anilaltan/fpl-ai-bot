@@ -5,13 +5,15 @@ This module contains the Optimizer class responsible for calculating player metr
 fixture difficulty ratings, and optimizing squad selection for Fantasy Premier League.
 """
 
-import logging
 import ast
 from typing import Any, Dict, List, Tuple, Optional
 import pandas as pd
 import numpy as np
 import yaml
 from pathlib import Path
+
+# Import centralized logger
+from src.logger import logger
 
 from src.news_radar import NewsRadar
 
@@ -681,7 +683,7 @@ class Optimizer:
             work_df = df.copy()
 
             # BULLETPROOF DATA SANITIZATION - Optimizasyondan önce kritik sütunları temizle
-            print("🛡️ [OPTIMIZER] Applying data sanitization before optimization...")
+            logger.info("Applying data sanitization before optimization...")
 
             # Kritik sütunlardaki NaN veya Sonsuz değerleri temizle
             work_df['price'] = work_df['price'].fillna(100.0)  # Fiyat yoksa çok pahalı yap ki seçmesin
@@ -692,16 +694,16 @@ class Optimizer:
                 work_df[target_metric] = pd.to_numeric(work_df[target_metric], errors='coerce').fillna(0.0)
 
             # Veri tiplerini logla (Debug için)
-            print(f"📊 [OPTIMIZER] Data Types Check:")
-            print(f"   - price: {work_df['price'].dtype} (range: {work_df['price'].min():.1f}-{work_df['price'].max():.1f})")
-            print(f"   - predicted_xP: {work_df['predicted_xP'].dtype} (range: {work_df['predicted_xP'].min():.2f}-{work_df['predicted_xP'].max():.2f})")
+            logger.debug("Data Types Check:")
+            logger.debug(f"   - price: {work_df['price'].dtype} (range: {work_df['price'].min():.1f}-{work_df['price'].max():.1f})")
+            logger.debug(f"   - predicted_xP: {work_df['predicted_xP'].dtype} (range: {work_df['predicted_xP'].min():.2f}-{work_df['predicted_xP'].max():.2f})")
             if target_metric in work_df.columns:
-                print(f"   - {target_metric}: {work_df[target_metric].dtype} (range: {work_df[target_metric].min():.2f}-{work_df[target_metric].max():.2f})")
+                logger.debug(f"   - {target_metric}: {work_df[target_metric].dtype} (range: {work_df[target_metric].min():.2f}-{work_df[target_metric].max():.2f})")
 
             # NaN veya infinite değer kontrolü
             nan_check = work_df[['price', 'predicted_xP', target_metric]].isna().sum()
             if nan_check.sum() > 0:
-                print(f"⚠️ [OPTIMIZER] Found NaN values: {nan_check.to_dict()}")
+                logger.warning(f"Found NaN values: {nan_check.to_dict()}")
 
             # Mandatory injury filter: drop players unlikely to feature
             if 'chance_of_playing_next_round' in work_df.columns:
@@ -817,15 +819,15 @@ class Optimizer:
             prob += lpSum(x[i] for i in x) == squad_size
 
             # Position constraints - KATI FPL KURALI: Pozisyon limitleri
-            print(f"⚽ [OPTIMIZER] Applying position constraints:")
+            logger.info("Applying position constraints:")
             for pos, lim in pos_limits.items():
                 idxs = [i for i in range(len(pool)) if str(pool.loc[i, 'position']) == str(pos)]
                 player_count = len(idxs)
                 prob += lpSum(x[i] for i in idxs) == int(lim)
-                print(f"   ✅ Position '{pos}': {player_count} players available, required = {lim}")
+                logger.info(f"   Position '{pos}': {player_count} players available, required = {lim}")
 
             # Team constraints - KATI FPL KURALI: Max 3 oyuncu aynı takımdan
-            print(f"🏟️ [OPTIMIZER] Applying team constraints: max {max_players_per_team} players per team")
+            logger.info(f"Applying team constraints: max {max_players_per_team} players per team")
             team_constraint_count = 0
             for team in pool['team_name'].unique().tolist():
                 idxs = [i for i in range(len(pool)) if pool.loc[i, 'team_name'] == team]
@@ -833,8 +835,8 @@ class Optimizer:
                 if player_count > 0:  # Sadece o takımda oyuncu varsa kısıtlama ekle
                     prob += lpSum(x[i] for i in idxs) <= max_players_per_team
                     team_constraint_count += 1
-                    print(f"   ✅ Team '{team}': {player_count} players available, constraint <= {max_players_per_team}")
-            print(f"🏟️ [OPTIMIZER] Added {team_constraint_count} team constraints")
+                    logger.info(f"   Team '{team}': {player_count} players available, constraint <= {max_players_per_team}")
+            logger.info(f"Added {team_constraint_count} team constraints")
 
             # Budget
             prob += lpSum(prices[i] * x[i] for i in x) <= float(budget)
@@ -874,11 +876,11 @@ class Optimizer:
             if not squad_df.empty:
                 team_distribution = squad_df['team_name'].value_counts().sort_values(ascending=False)
                 max_from_team = team_distribution.max()
-                print(f"🏆 [OPTIMIZER] Team distribution in squad:")
+                logger.info("Team distribution in squad:")
                 for team, count in team_distribution.items():
-                    status = "❌ VIOLATION!" if count > max_players_per_team else "✅ OK"
-                    print(f"   {team}: {count} players {status}")
-                print(f"🏆 [OPTIMIZER] Max players from any team: {max_from_team} (limit: {max_players_per_team})")
+                    status = "VIOLATION!" if count > max_players_per_team else "OK"
+                    logger.info(f"   {team}: {count} players {status}")
+                logger.info(f"Max players from any team: {max_from_team} (limit: {max_players_per_team})")
 
             logger.info(
                 "Dream team solved (ILP): %d players, cost=%.2f, base_points=%.2f, captain=%s (+%.2f)",

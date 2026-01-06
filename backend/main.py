@@ -6,35 +6,28 @@ integrating with existing optimization algorithms from the src/ directory.
 """
 
 import logging
-import sys
-import traceback
-from pathlib import Path
 from typing import Dict, Any, Optional
 import pandas as pd
 
-from fastapi import FastAPI, HTTPException, Depends, status, Request
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer
 
 # Import our Pydantic models
-from .models import (
-    LoginRequest, LoginResponse, PlayersResponse, DreamTeamRequest,
-    DreamTeamResponse, UserTeamResponse, ErrorResponse, PlayerData, DreamTeamPlayer
+from backend.models import (
+    LoginRequest, LoginResponse, PlayersResponse, ErrorResponse, PlayerData
 )
 
 # Import routers
-from .routers.players import router as players_router
+from backend.routers.players import router as players_router
+from backend.routers.auth import router as auth_router
+from backend.routers.dream_team import router as dream_team_router
 
-# Import existing logic from src/
-sys.path.append(str(Path(__file__).parent.parent))
-from src.database import DatabaseManager
-from src.data_loader import DataLoader
-from src.model import FPLModel
-from src.optimizer import Optimizer
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Import from src/
+from src.database import engine, Base, SessionLocal
+from src.data_loader import get_fpl_data
+from src.models import Player
+from src.logger import logger
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -55,159 +48,89 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(auth_router, prefix="/auth", tags=["authentication"])
 app.include_router(players_router)
-
-# Initialize components
-db_manager = DatabaseManager()
-data_loader = DataLoader()
-optimizer = Optimizer()
+app.include_router(dream_team_router, tags=["optimization"])
 
 # Security scheme (simplified for now - in production use JWT)
 security = HTTPBearer(auto_error=False)
 
 
+# Import get_current_user from auth router
+from backend.routers.auth import get_current_user
+
+
 @app.on_event("startup")
 async def startup_event():
     """
-    Load FPL data at startup to ensure fresh data is available.
+    Initialize database tables and load FPL data at startup.
+    Cache data in app.state for fast access.
     """
     try:
-        logger.info("🚀 Starting FPL SaaS API - Loading initial data...")
-        global _data_cache
-        _data_cache = load_fpl_data()
-        logger.info("✅ Initial data load completed")
+        logger.info("🚀 Starting FPL SaaS API...")
+
+        # Ensure database tables exist
+        logger.info("📦 Creating database tables if they don't exist...")
+        Base.metadata.create_all(bind=engine)
+        logger.info("✅ Database tables ready")
+
+        # Load and cache FPL data in app.state
+        logger.info("📊 Loading and caching FPL data...")
+        try:
+            data = load_fpl_data()
+
+            # Sync data to database (now expects list, not DataFrame)
+            logger.info("💾 Syncing FPL data to database...")
+            players_list = data.get('players_df', [])
+            if isinstance(players_list, list):
+                sync_fpl_data_to_database(players_list)
+            else:
+                logger.warning("Players data is not a list, skipping database sync")
+
+            app.state.fpl_data = data
+            logger.info(f"✅ FPL data cached in app.state.fpl_data - {len(data['players_df'])} players loaded")
+        except Exception as data_error:
+            logger.error(f"❌ Failed to load and cache FPL data: {data_error}")
+            app.state.fpl_data = None
+            # Don't crash the app, just log the error
+
     except Exception as e:
-        logger.error(f"❌ Failed to load initial data: {e}")
+        logger.error(f"❌ Startup error: {e}")
         # Don't crash the app, just log the error
 
-# Global data cache (in production, use Redis or similar)
+# Global data cache (simplified for now)
 _data_cache: Optional[Dict[str, Any]] = None
 
-# Data freshness threshold (24 hours)
-DATA_FRESHNESS_HOURS = 24
 
-# Force cache reset on startup for fresh data
-print("🔄 [CACHE] Resetting global data cache for fresh FPL data...")
-_data_cache = None
-
-
-def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Optional[Dict[str, Any]]:
-    """
-    Dependency to get current authenticated user.
-    For now, using simple token-based auth (simplified approach).
-    """
-    if not credentials:
-        return None
-
-    # In this simplified version, we're not implementing full JWT yet
-    # Just checking if token exists (placeholder for future JWT implementation)
-    token = credentials.credentials
-
-    # For now, return a mock user - in production, decode JWT and validate
-    # This is just a placeholder until proper JWT auth is implemented
-    return {"username": "mock_user", "user_id": 1, "fpl_id": "123456"}
+# get_current_user is now imported from auth router
 
 
 def load_fpl_data(force_refresh: bool = False) -> Dict[str, Any]:
     """
-    Load FPL data using existing DataLoader.
-    Cached to avoid repeated API calls, but refreshes if stale (24+ hours).
+    Load FPL data using simplified get_fpl_data function.
+    Returns data in the format expected by the application.
     """
     global _data_cache
 
-    # Check if data is stale (older than 24 hours)
-    if _data_cache is not None and not force_refresh:
-        last_updated = _data_cache.get('last_updated')
-        if last_updated:
-            hours_old = (pd.Timestamp.now() - last_updated).total_seconds() / 3600
-            if hours_old < DATA_FRESHNESS_HOURS:
-                print(f"[DATA] Using cached data ({hours_old:.1f} hours old)")
-                return _data_cache
-            else:
-                print(f"[DATA] Data is stale ({hours_old:.1f} hours old), refreshing...")
-                print("[DATA] Data is stale, refreshing...")
-
-    # Force refresh or no cache available
-    if force_refresh:
-        print("[DATA] Force refresh requested, fetching fresh data...")
-
     try:
-        logger.info("Loading FPL data...")
+        logger.info("Loading FPL data from API...")
 
-        # Fetch data using existing DataLoader
-        df_understat, df_fpl, df_fixtures = data_loader.fetch_all_data()
+        # Fetch fresh data from FPL API
+        players_list = get_fpl_data()
 
-        print(f"[DATA] FPL data fetched - Players: {len(df_fpl)}, Fixtures: {len(df_fixtures)}")
-        print(f"[DATA] FPL columns: {df_fpl.columns.tolist()[:10]}...")  # First 10 columns
-        print(f"[DATA] Fixture columns: {df_fixtures.columns.tolist()}")
+        if not players_list:
+            logger.warning("No players data received from API")
+            return {"players_df": [], "fixtures_df": [], "last_updated": pd.Timestamp.now()}
 
-        # Merge and enrich data
-        df_merged = data_loader.merge_data(df_understat, df_fpl)
+        logger.info(f"Loaded {len(players_list)} players from FPL API")
 
-        # Add fixture information (data already enriched in merge_data)
-
-        # Calculate metrics using Optimizer
-        df_metrics = optimizer.calculate_metrics(df_merged, df_fixtures)
-
-        # Add xP predictions using FPL data
-        print("[DATA] Adding xP predictions using FPL data...")
-
-        # Primary: Use FPL's ep_next (expected points next)
-        if 'ep_next' in df_metrics.columns:
-            df_metrics['predicted_xP_per_90'] = pd.to_numeric(df_metrics['ep_next'], errors='coerce')
-            print(f"[DATA] Using ep_next as predicted_xP_per_90 - sample: {df_metrics['ep_next'].head(3).tolist()}")
-
-        # Secondary fallback: Use form (recent performance)
-        if df_metrics['predicted_xP_per_90'].isna().all() or (df_metrics['predicted_xP_per_90'] == 0).all():
-            if 'form' in df_metrics.columns:
-                df_metrics['predicted_xP_per_90'] = pd.to_numeric(df_metrics['form'], errors='coerce')
-                print("[DATA] Using form as predicted_xP_per_90 (secondary fallback)")
-            else:
-                print("[DATA] WARNING: No form column available")
-
-        # Tertiary fallback: Use xG + xA combination (if available from Understat merge)
-        if df_metrics['predicted_xP_per_90'].isna().all() or (df_metrics['predicted_xP_per_90'] == 0).all():
-            if 'xG_per_90' in df_metrics.columns and 'xA_per_90' in df_metrics.columns:
-                df_metrics['predicted_xP_per_90'] = (
-                    pd.to_numeric(df_metrics['xG_per_90'], errors='coerce').fillna(0) +
-                    pd.to_numeric(df_metrics['xA_per_90'], errors='coerce').fillna(0) * 2.0
-                )
-                print("[DATA] Using xG+xA combination as predicted_xP_per_90 (tertiary fallback)")
-            else:
-                print("[DATA] WARNING: No xG/xA columns available")
-
-        # Final fallback: Default value for any remaining NaN values
-        df_metrics['predicted_xP_per_90'] = df_metrics['predicted_xP_per_90'].fillna(2.5)
-
-        print(f"[DATA] Final predicted_xP_per_90 stats:")
-        print(f"[DATA] - Mean: {df_metrics['predicted_xP_per_90'].mean():.2f}")
-        print(f"[DATA] - Non-zero values: {(df_metrics['predicted_xP_per_90'] > 0).sum()}")
-        print(f"[DATA] - Sample values: {df_metrics['predicted_xP_per_90'].head(5).tolist()}")
-
-        df_predictions = df_metrics
-        print(f"[DATA] xP predictions added. Shape: {df_predictions.shape}")
-
-        # Filter out invalid players (those without proper names)
-        valid_players = df_predictions[
-            df_predictions['web_name'].notna() &
-            (df_predictions['web_name'].str.len() > 0) &
-            ~df_predictions['web_name'].str.contains('Unknown', na=False, case=False)
-        ].copy()
-
-        if len(valid_players) != len(df_predictions):
-            print(f"[DATA] Filtered out {len(df_predictions) - len(valid_players)} invalid players")
-            df_predictions = valid_players
-
-        print(f"[DATA] Final dataset: {len(df_predictions)} players")
-        print(f"[DATA] Sample players: {df_predictions[['web_name', 'team_name', 'position', 'predicted_xP_per_90']].head(5).to_dict('records')}")
-
+        # Store list directly (NO DataFrame conversion for safety)
         _data_cache = {
-            "players_df": df_predictions,
-            "fixtures_df": df_fixtures,
+            "players_df": players_list,  # Now contains the list directly
+            "fixtures_df": [],  # Empty fixtures list for consistency
             "last_updated": pd.Timestamp.now()
         }
 
-        logger.info(f"Loaded data for {len(df_metrics)} players")
         return _data_cache
 
     except Exception as e:
@@ -216,6 +139,81 @@ def load_fpl_data(force_refresh: bool = False) -> Dict[str, Any]:
             status_code=500,
             detail="Failed to load FPL data"
         )
+
+
+def sync_fpl_data_to_database(players_list: list) -> None:
+    """
+    Sync FPL player data to PostgreSQL database.
+    Performs UPSERT operations - updates existing records, inserts new ones.
+
+    Args:
+        players_list: List of player dictionaries from FPL API
+    """
+    db = SessionLocal()
+    try:
+        synced_count = 0
+        updated_count = 0
+        inserted_count = 0
+
+        logger.info(f"Starting database sync for {len(players_list)} players...")
+
+        for player_data in players_list:
+            try:
+                # Validate player data
+                player_id = player_data.get('id')
+                if not player_id:
+                    continue  # Skip invalid records
+
+                # Prepare player data using standardized field names
+                # player_data already has the correct field names from data_loader
+                clean_player_data = {
+                    'id': int(player_data['id']),
+                    'name': str(player_data['name']),
+                    'team': str(player_data['team']),  # Now team name string
+                    'position': str(player_data['position']),  # Now position string (GKP, DEF, etc.)
+                    'price': float(player_data['price']),
+                    'xp': float(player_data['xp']),
+                    'photo': str(player_data.get('photo', '')),
+                    'chance_of_playing': int(player_data.get('chance_of_playing', 100))
+                }
+
+                # Check if player already exists
+                existing_player = db.query(Player).filter(Player.id == player_id).first()
+
+                if existing_player:
+                    # Update existing player
+                    for key, value in clean_player_data.items():
+                        setattr(existing_player, key, value)
+                    updated_count += 1
+                    logger.debug(f"Updated player: {clean_player_data['name']} (ID: {player_id})")
+                else:
+                    # Insert new player
+                    new_player = Player(**clean_player_data)
+                    db.add(new_player)
+                    inserted_count += 1
+                    logger.debug(f"Inserted new player: {clean_player_data['name']} (ID: {player_id})")
+
+                synced_count += 1
+
+                # Commit each successful operation to avoid transaction locks
+                db.commit()
+
+            except Exception as player_error:
+                logger.warning(f"Error processing player {player_data.get('id', 'unknown')}: {player_error}")
+                # CRITICAL: Rollback on error to prevent transaction abortion
+                db.rollback()
+                continue  # Continue with next player
+
+        logger.info(f"✅ Database sync completed: {synced_count} players processed")
+        logger.info(f"   📊 Updated: {updated_count} players")
+        logger.info(f"   ➕ Inserted: {inserted_count} players")
+
+    except Exception as e:
+        logger.error(f"❌ Database sync failed: {e}")
+        db.rollback()  # Rollback any pending transaction
+        raise
+    finally:
+        db.close()
 
 
 @app.get("/")
@@ -235,61 +233,20 @@ async def health_check():
     return {"status": "healthy", "timestamp": pd.Timestamp.now().isoformat()}
 
 
-# Authentication endpoints will be implemented in the next step
-@app.post("/auth/login", response_model=LoginResponse)
-async def login(request: LoginRequest):
-    """Authenticate user and return token."""
-    print(f"🔐 [AUTH] Login attempt for user: {request.username}")
-    try:
-        # Verify user credentials using existing DatabaseManager
-        user_data = db_manager.verify_user(request.username, request.password)
-
-        if user_data:
-            print(f"✅ [AUTH] Login successful for user: {user_data['username']} (ID: {user_data['id']})")
-            # For now, return a simple token (in production, use JWT)
-            # This is a simplified approach - in production implement proper JWT
-            token = f"mock_token_{user_data['id']}_{request.username}"
-
-            return LoginResponse(
-                success=True,
-                message=f"Welcome back, {user_data['username']}!",
-                token=token,
-                user={
-                    "id": user_data["id"],
-                    "username": user_data["username"],
-                    "email": user_data["email"],
-                    "fpl_id": user_data.get("fpl_id"),
-                    "subscription_plan": user_data.get("subscription_plan", "free")
-                }
-            )
-        else:
-            print(f"❌ [AUTH] Login failed for user: {request.username} - Invalid credentials")
-            return LoginResponse(
-                success=False,
-                message="Invalid username or password",
-                token=None,
-                user=None
-            )
-
-    except Exception as e:
-        logger.error(f"Login error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Authentication service temporarily unavailable"
-        )
+# Authentication endpoints are now handled by auth router
 
 
 @app.get("/players", response_model=PlayersResponse)
 async def get_players():
     """Get all players data."""
     try:
-        # Load FPL data (with staleness check)
+        # Load FPL data
         data = load_fpl_data()
         df_players = data["players_df"]
 
-        # Convert DataFrame to PlayerData objects
+        # Convert DataFrame to PlayerData objects (simplified)
         players = []
-        for _, row in df_players.iterrows():
+        for _, row in df_players.head(50).iterrows():  # Limit to first 50 for demo
             try:
                 player = PlayerData(
                     id=int(row.get('id', 0)),
@@ -297,23 +254,6 @@ async def get_players():
                     team_name=str(row.get('team_name', '')),
                     position=str(row.get('position', '')),
                     price=float(row.get('price', 0.0)),
-                    form=float(row.get('form', 0.0)) if pd.notna(row.get('form')) else None,
-                    total_points=int(row.get('total_points', 0)) if pd.notna(row.get('total_points')) else None,
-                    minutes=int(row.get('minutes', 0)) if pd.notna(row.get('minutes')) else None,
-                    goals_scored=int(row.get('goals_scored', 0)) if pd.notna(row.get('goals_scored')) else None,
-                    assists=int(row.get('assists', 0)) if pd.notna(row.get('assists')) else None,
-                    clean_sheets=int(row.get('clean_sheets', 0)) if pd.notna(row.get('clean_sheets')) else None,
-                    saves=int(row.get('saves', 0)) if pd.notna(row.get('saves')) else None,
-                    expected_goals_per_90=float(row.get('expected_goals_per_90', 0.0)) if pd.notna(row.get('expected_goals_per_90')) else None,
-                    expected_assists_per_90=float(row.get('expected_assists_per_90', 0.0)) if pd.notna(row.get('expected_assists_per_90')) else None,
-                    threat=float(row.get('threat', 0.0)) if pd.notna(row.get('threat')) else None,
-                    creativity=float(row.get('creativity', 0.0)) if pd.notna(row.get('creativity')) else None,
-                    influence=float(row.get('influence', 0.0)) if pd.notna(row.get('influence')) else None,
-                    ict_index=float(row.get('ict_index', 0.0)) if pd.notna(row.get('ict_index')) else None,
-                    gw19_xP=float(row.get('gw19_xP', 0.0)) if pd.notna(row.get('gw19_xP')) else None,
-                    long_term_xP=float(row.get('long_term_xP', 0.0)) if pd.notna(row.get('long_term_xP')) else None,
-                    risk_adjusted_xP=float(row.get('risk_adjusted_xP', 0.0)) if pd.notna(row.get('risk_adjusted_xP')) else None,
-                    availability_score=float(row.get('availability_score', 0.0)) if pd.notna(row.get('availability_score')) else None,
                 )
                 players.append(player)
             except Exception as e:
@@ -334,12 +274,12 @@ async def get_players():
         )
 
 
-@app.post("/optimize/dream-team", response_model=DreamTeamResponse)
-async def optimize_dream_team(
-    request: DreamTeamRequest,
-    req: Request,  # FastAPI Request object to access headers
-    user: Optional[Dict[str, Any]] = Depends(get_current_user)
-):
+# @app.post("/optimize/dream-team", response_model=DreamTeamResponse)
+# async def optimize_dream_team(
+#     request: DreamTeamRequest,
+#     req: Request,  # FastAPI Request object to access headers
+#     user: Optional[Dict[str, Any]] = Depends(get_current_user)
+# ):
     """Optimize dream team for authenticated user."""
     auth_header = req.headers.get('authorization', 'None')
     print("🚀 [BACKEND] Dream Team endpoint called!")
@@ -554,8 +494,8 @@ async def optimize_dream_team(
         )
 
 
-@app.get("/user/team", response_model=UserTeamResponse)
-async def get_user_team(user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+# @app.get("/user/team", response_model=UserTeamResponse)
+# async def get_user_team(user: Optional[Dict[str, Any]] = Depends(get_current_user)):
     """Get user's FPL team."""
     if not user:
         raise HTTPException(

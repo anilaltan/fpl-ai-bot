@@ -52,13 +52,14 @@ api.interceptors.response.use(
 );
 
 // API Functions
-export const getDreamTeam = async (budget = null) => {
+export const getDreamTeam = async (budget = 100) => {
   console.log('🔄 [API] Fetching Dream Team from:', api.defaults.baseURL);
-  console.log('🔄 [API] Request body:', budget ? { budget } : {});
+  console.log('🔄 [API] Query params:', { budget });
 
   try {
-    const requestBody = budget ? { budget } : {};
-    const response = await api.post('/optimize/dream-team', requestBody);
+    const response = await api.get('/dream-team', {
+      params: { budget: budget || 100 }
+    });
     console.log('✅ [API] Dream Team response received:', response.status);
     return response.data;
   } catch (error) {

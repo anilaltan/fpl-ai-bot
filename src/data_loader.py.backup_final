@@ -1,0 +1,147 @@
+"""
+FPL Data Loader - Processes API data with Pandas and returns clean Python list
+
+This module fetches player data from FPL API, processes it with Pandas,
+and returns a clean Python list (not DataFrame) for application use.
+"""
+
+import logging
+import requests
+import pandas as pd
+from typing import List, Dict, Any
+
+# Import centralized logger
+from src.logger import logger
+
+
+def get_fpl_data() -> List[Dict[str, Any]]:
+    """
+    Fetch and process player data from Fantasy Premier League API.
+
+    Uses Pandas for data processing but returns a clean Python list (NOT DataFrame).
+
+    Returns:
+        List of player dictionaries with standardized fields:
+        - id: Player ID (int)
+        - name: Player name (str)
+        - team: Team ID (int) - NEVER None
+        - position: Position ID (1=GK, 2=DEF, 3=MID, 4=FWD)
+        - price: Price in millions (float)
+        - xp: Expected points (float)
+    """
+    try:
+        logger.info("Fetching FPL data from API...")
+
+        # FPL API endpoint
+        url = "https://fantasy.premierleague.com/api/bootstrap-static/"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json,text/plain,*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Origin': 'https://fantasy.premierleague.com',
+            'Referer': 'https://fantasy.premierleague.com/'
+        }
+
+        # Make request
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+
+        data = response.json()
+
+        # Extract players (elements) and convert to DataFrame
+        elements = data.get('elements', [])
+        if not elements:
+            logger.warning("No elements found in FPL API response")
+            return []
+
+        # Create DataFrame from API data
+        df = pd.DataFrame(elements)
+        logger.info(f"Raw DataFrame created with {len(df)} rows and {len(df.columns)} columns")
+
+        # Select required columns and rename to standard field names
+        required_columns = ['id', 'web_name', 'team', 'element_type', 'now_cost', 'ep_next']
+        available_columns = [col for col in required_columns if col in df.columns]
+
+        if len(available_columns) != len(required_columns):
+            missing = set(required_columns) - set(available_columns)
+            logger.warning(f"Missing columns in API response: {missing}")
+
+        df = df[available_columns].copy()
+
+        # CRITICAL DATA PROCESSING
+
+        # 1. Team ID: Ensure it's integer and never None
+        if 'team' not in df.columns:
+            logger.error("Team column missing from API response")
+            return []
+
+        # Drop rows where team is None or NaN
+        initial_count = len(df)
+        df = df.dropna(subset=['team'])
+        df['team'] = df['team'].astype(int)
+
+        if len(df) < initial_count:
+            logger.warning(f"Dropped {initial_count - len(df)} players with invalid team data")
+
+        # Log unique teams before processing
+        unique_teams_before = df['team'].nunique()
+        logger.info(f"Data after team filtering: {len(df)} players from {unique_teams_before} teams")
+
+        # 2. Price conversion: API returns in 1/10 millions (e.g., 65 = £6.5M)
+        if 'now_cost' in df.columns:
+            df['price'] = df['now_cost'] / 10.0
+            df['price'] = df['price'].astype(float)
+            logger.debug(f"Price conversion completed. Range: £{df['price'].min():.1f}M - £{df['price'].max():.1f}M")
+        else:
+            logger.warning("now_cost column missing, setting all prices to 0.0")
+            df['price'] = 0.0
+
+        # 3. Predicted xP: Convert to float, default to 0.0 if None/NaN
+        if 'ep_next' in df.columns:
+            df['xp'] = pd.to_numeric(df['ep_next'], errors='coerce').fillna(0.0)
+            logger.debug(f"xP conversion completed. Range: {df['xp'].min():.1f} - {df['xp'].max():.1f}")
+        else:
+            logger.warning("ep_next column missing, setting all xp to 0.0")
+            df['xp'] = 0.0
+
+        # 4. Position mapping (keep as integer, not string)
+        # element_type is already 1,2,3,4 which matches our position standard
+        df['position'] = df['element_type'].astype(int)
+
+        # 5. Select final columns and rename to standard field names
+        final_columns = ['id', 'web_name', 'team', 'position', 'price', 'xp']
+        df_final = df[final_columns].copy()
+
+        # Rename columns for consistency
+        df_final = df_final.rename(columns={
+            'web_name': 'name'
+        })
+
+        # Ensure correct data types
+        df_final['id'] = df_final['id'].astype(int)
+        df_final['name'] = df_final['name'].astype(str)
+        df_final['team'] = df_final['team'].astype(int)
+        df_final['position'] = df_final['position'].astype(int)
+        df_final['price'] = df_final['price'].astype(float)
+        df_final['xp'] = df_final['xp'].astype(float)
+
+        # CRITICAL: Convert DataFrame to Python list (NOT DataFrame)
+        players_list = df_final.to_dict('records')
+
+        # Final statistics
+        unique_teams = len(df_final['team'].unique())
+        logger.info(f"Converted DataFrame to list. Loaded {len(players_list)} players from {unique_teams} teams")
+
+        # Validation sample
+        if players_list:
+            sample = players_list[0]
+            logger.debug(f"Sample processed player: ID={sample['id']}, Name={sample['name']}, Team={sample['team']}, Position={sample['position']}, Price={sample['price']}, XP={sample['xp']}")
+
+        return players_list
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error fetching FPL data: {e}")
+        return []
+    except Exception as e:
+        logger.error(f"Unexpected error in get_fpl_data: {e}")
+        return []

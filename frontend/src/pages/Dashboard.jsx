@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import PitchView from '../components/PitchView';
 import PlayersTable from '../components/PlayersTable';
+import SoccerPitch from '../components/SoccerPitch';
 import { getDreamTeam } from '../services/api';
 import {
   Home,
@@ -25,6 +26,7 @@ const Dashboard = () => {
 
   // Dream Team state
   const [dreamTeam, setDreamTeam] = useState([]);
+  const [dreamTeamStats, setDreamTeamStats] = useState({ cost: 0, xp: 0 });
   const [dreamTeamLoading, setDreamTeamLoading] = useState(false);
   const [dreamTeamError, setDreamTeamError] = useState(null);
 
@@ -49,6 +51,10 @@ const Dashboard = () => {
       const response = await getDreamTeam();
       if (response.success && response.squad) {
         setDreamTeam(response.squad);
+        setDreamTeamStats({
+          cost: response.total_cost || 0,
+          xp: response.total_xP || 0
+        });
       } else {
         setDreamTeamError(response.message || 'Failed to fetch dream team');
       }
@@ -178,10 +184,10 @@ const Dashboard = () => {
         </nav>
 
         {/* Logout Button */}
-        <div className="absolute bottom-4 left-4 right-4">
+        <div className="absolute bottom-4 left-4">
           <button
             onClick={handleLogout}
-            className="w-full flex items-center space-x-3 px-3 py-2 rounded-md text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
+            className="inline-flex items-center gap-3 px-4 py-2 rounded-lg transition-colors hover:bg-slate-700 text-slate-300 hover:text-white"
           >
             <LogOut className="h-5 w-5 flex-shrink-0" />
             {!sidebarCollapsed && (
@@ -341,8 +347,188 @@ const Dashboard = () => {
 
                 {/* Success State - Show Dream Team */}
                 {!dreamTeamLoading && !dreamTeamError && dreamTeam.length > 0 && (
-                  <PitchView team={dreamTeam} />
+                  <div className="space-y-6">
+                    {/* Stats Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-slate-400 text-sm">Total Players</p>
+                            <p className="text-2xl font-bold text-white">{dreamTeam.length}</p>
+                          </div>
+                          <div className="h-12 w-12 bg-blue-500 rounded-full flex items-center justify-center">
+                            <Users className="h-6 w-6 text-white" />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-slate-400 text-sm">Total Cost</p>
+                            <p className="text-2xl font-bold text-emerald-400">£{dreamTeamStats.cost.toFixed(1)}M</p>
+                          </div>
+                          <div className="h-12 w-12 bg-emerald-500 rounded-full flex items-center justify-center">
+                            <span className="text-white font-bold">£</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-slate-400 text-sm">Total xP</p>
+                            <p className="text-2xl font-bold text-purple-400">{dreamTeamStats.xp.toFixed(1)}</p>
+                          </div>
+                          <div className="h-12 w-12 bg-purple-500 rounded-full flex items-center justify-center">
+                            <Zap className="h-6 w-6 text-white" />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+                        <div className="flex items-center justify-between mb-4">
+                          <div>
+                            <p className="text-slate-400 text-sm">Budget Used</p>
+                            <p className="text-2xl font-bold text-yellow-400">{((dreamTeamStats.cost / 100) * 100).toFixed(1)}%</p>
+                          </div>
+                          <div className="h-12 w-12 bg-yellow-500 rounded-full flex items-center justify-center">
+                            <Target className="h-6 w-6 text-white" />
+                          </div>
+                        </div>
+                        {/* Progress Bar */}
+                        <div className="w-full bg-slate-700 rounded-full h-2">
+                          <div
+                            className={`h-2 rounded-full transition-all duration-500 ${
+                              dreamTeamStats.cost <= 95 ? 'bg-green-500' :
+                              dreamTeamStats.cost <= 100 ? 'bg-yellow-500' :
+                              'bg-red-500'
+                            }`}
+                            style={{ width: `${Math.min(dreamTeamStats.cost, 150)}%` }}
+                          ></div>
+                        </div>
+                        {/* Budget Status Text */}
+                        <div className="mt-2 text-xs text-center">
+                          <span className={`font-medium ${
+                            dreamTeamStats.cost <= 95 ? 'text-green-400' :
+                            dreamTeamStats.cost <= 100 ? 'text-yellow-400' :
+                            'text-red-400'
+                          }`}>
+                            {dreamTeamStats.cost <= 95 ? 'Under Budget' :
+                             dreamTeamStats.cost <= 100 ? 'On Budget' :
+                             'Over Budget'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Dream Team Display - Only Pitch View */}
+                    <SoccerPitch players={dreamTeam} />
+                  </div>
                 )}
+                  <div className="space-y-6">
+                    {/* Stats Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-slate-400 text-sm">Total Players</p>
+                            <p className="text-2xl font-bold text-white">{dreamTeam.length}</p>
+                          </div>
+                          <div className="h-12 w-12 bg-blue-500 rounded-full flex items-center justify-center">
+                            <Users className="h-6 w-6 text-white" />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-slate-400 text-sm">Total Cost</p>
+                            <p className="text-2xl font-bold text-emerald-400">£{dreamTeamStats.cost.toFixed(1)}M</p>
+                          </div>
+                          <div className="h-12 w-12 bg-emerald-500 rounded-full flex items-center justify-center">
+                            <span className="text-white font-bold">£</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-slate-400 text-sm">Total xP</p>
+                            <p className="text-2xl font-bold text-purple-400">{dreamTeamStats.xp.toFixed(1)}</p>
+                          </div>
+                          <div className="h-12 w-12 bg-purple-500 rounded-full flex items-center justify-center">
+                            <Zap className="h-6 w-6 text-white" />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-slate-400 text-sm">Budget Used</p>
+                            <p className="text-2xl font-bold text-yellow-400">{((dreamTeamStats.cost / 100) * 100).toFixed(1)}%</p>
+                          </div>
+                          <div className="h-12 w-12 bg-yellow-500 rounded-full flex items-center justify-center">
+                            <Target className="h-6 w-6 text-white" />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Dream Team Table */}
+                    <div className="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+                      <div className="px-6 py-4 border-b border-slate-700">
+                        <h3 className="text-lg font-semibold text-white">Dream Team Squad</h3>
+                        <p className="text-slate-400 text-sm">Optimized 15-player squad with maximum expected points</p>
+                      </div>
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full">
+                          <thead className="bg-slate-700/50">
+                            <tr>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Position</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Player</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Team</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Price</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">xP</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-700">
+                            {dreamTeam.map((player, index) => (
+                              <tr key={player.id || index} className="hover:bg-slate-700/30">
+                                <td className="px-6 py-4 whitespace-nowrap">
+                                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                    player.position === 'GKP' ? 'bg-yellow-100 text-yellow-800' :
+                                    player.position === 'DEF' ? 'bg-blue-100 text-blue-800' :
+                                    player.position === 'MID' ? 'bg-green-100 text-green-800' :
+                                    'bg-red-100 text-red-800'
+                                  }`}>
+                                    {player.position}
+                                  </span>
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-white">
+                                  {player.name}
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-300">
+                                  {player.team_name}
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-emerald-400">
+                                  £{player.price.toFixed(1)}M
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-purple-400">
+                                  {player.predicted_xP?.toFixed(1) || '0.0'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                
 
                 {/* Empty State */}
                 {!dreamTeamLoading && !dreamTeamError && dreamTeam.length === 0 && (

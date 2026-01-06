@@ -5,7 +5,6 @@ This module contains the FPLModel class responsible for training and predicting
 Fantasy Premier League player points using segmented XGBoost regressors.
 """
 
-import logging
 import ast
 import json
 from typing import Any, Dict, List, Tuple, Optional
@@ -13,6 +12,9 @@ import pandas as pd
 import numpy as np
 import yaml
 from pathlib import Path
+
+# Import centralized logger
+from src.logger import logger
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 
@@ -302,8 +304,8 @@ class FPLModel:
         feature_payload = self._load_feature_list()
         loaded_features = feature_payload.get(segment_name) or feature_list
 
-        print(f"Model Beklentisi: {loaded_features[:5]}...")
-        print(f"Gelen Veri Sütunları: {list(df_segment.columns[:5])}...")
+        logger.debug(f"Model Beklentisi: {loaded_features[:5]}...")
+        logger.debug(f"Gelen Veri Sütunları: {list(df_segment.columns[:5])}...")
 
         missing_features = [f for f in loaded_features if f not in df_segment.columns]
         extra_features = [c for c in df_segment.columns if c not in loaded_features]
@@ -323,36 +325,36 @@ class FPLModel:
         )
         input_data = aligned_df[loaded_features]
 
-        print(f"[DEBUG][{segment_name}] Input head:\n{input_data.head()}")
-        print(f"[DEBUG][{segment_name}] Input describe():\n{input_data.describe(include='all')}")
+        logger.debug(f"[{segment_name}] Input head:\n{input_data.head()}")
+        logger.debug(f"[{segment_name}] Input describe():\n{input_data.describe(include='all')}")
 
         scaler = getattr(self, "scaler", None)
         if scaler is not None:
             try:
                 sample_scaled = scaler.transform(input_data.iloc[: min(len(input_data), 5)])
-                print(
-                    f"[DEBUG][{segment_name}] Scaler sample min/max: "
+                logger.debug(
+                    f"[{segment_name}] Scaler sample min/max: "
                     f"min={sample_scaled.min():.4f}, max={sample_scaled.max():.4f}"
                 )
             except Exception as exc:
-                print(f"[DEBUG][{segment_name}] Scaler kontrolü hatası: {exc}")
+                logger.debug(f"[{segment_name}] Scaler kontrolü hatası: {exc}")
         else:
-            print(f"[DEBUG][{segment_name}] Scaler tanımlı değil, kontrol atlandı.")
+            logger.debug(f"[{segment_name}] Scaler tanımlı değil, kontrol atlandı.")
 
         predictions = model.predict(input_data)
 
-        print(f"[DEBUG][{segment_name}] Prediction describe():\n{pd.Series(predictions).describe()}")
-        print(f"[DEBUG][{segment_name}] İlk 5 tahmin: {predictions[:5]}")
+        logger.debug(f"[{segment_name}] Prediction describe():\n{pd.Series(predictions).describe()}")
+        logger.debug(f"[{segment_name}] İlk 5 tahmin: {predictions[:5]}")
 
         if hasattr(model, "feature_importances_"):
             importances = pd.Series(model.feature_importances_, index=loaded_features)
-            print(
-                f"[DEBUG][{segment_name}] Feature importances (top 20):\n"
+            logger.debug(
+                f"[{segment_name}] Feature importances (top 20):\n"
                 f"{importances.sort_values(ascending=False).head(20)}"
             )
             if (importances == 0).all():
-                print(
-                    f"[DEBUG][{segment_name}] WARNING: Feature importances are all zero. "
+                logger.warning(
+                    f"[{segment_name}] Feature importances are all zero. "
                     "Model eğitimi başarısız olabilir."
                 )
 

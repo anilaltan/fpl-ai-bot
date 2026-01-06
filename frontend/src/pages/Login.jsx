@@ -27,7 +27,16 @@ const Login = () => {
     setError('');
 
     try {
-      const response = await api.post('/auth/login', formData);
+      // Convert to form data for OAuth2PasswordRequestForm
+      const formDataEncoded = new URLSearchParams();
+      formDataEncoded.append('username', formData.username);
+      formDataEncoded.append('password', formData.password);
+
+      const response = await api.post('/auth/login', formDataEncoded, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+      });
 
       if (response.data.success) {
         // Store token and user data
@@ -135,9 +144,9 @@ const Login = () => {
 
           {/* Test User Info */}
           <div className="mt-4 p-3 bg-blue-900/20 border border-blue-500/30 rounded-md">
-            <p className="text-xs text-blue-300 font-medium mb-1">🚀 Test Account:</p>
-            <p className="text-xs text-slate-300">Username: <span className="font-mono text-white">testuser</span></p>
-            <p className="text-xs text-slate-300">Password: <span className="font-mono text-white">testpass123</span></p>
+            <p className="text-xs text-blue-300 font-medium mb-1">🚀 Admin Account:</p>
+            <p className="text-xs text-slate-300">Username: <span className="font-mono text-white">admin</span></p>
+            <p className="text-xs text-slate-300">Password: <span className="font-mono text-white">admin123</span></p>
           </div>
 
           {/* Footer */}

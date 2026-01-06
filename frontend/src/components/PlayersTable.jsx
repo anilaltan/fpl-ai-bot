@@ -77,7 +77,15 @@ const PlayersTable = () => {
 
     // Apply position filter
     if (positionFilter !== 'all') {
-      filtered = filtered.filter(player => player.position === positionFilter);
+      filtered = filtered.filter(player => {
+        const playerPos = player.position;
+        // Support both old (Goalkeeper) and new (GKP) formats
+        if (positionFilter === 'GKP') return playerPos === 'GKP' || playerPos === 'Goalkeeper';
+        if (positionFilter === 'DEF') return playerPos === 'DEF' || playerPos === 'Defender';
+        if (positionFilter === 'MID') return playerPos === 'MID' || playerPos === 'Midfielder';
+        if (positionFilter === 'FWD') return playerPos === 'FWD' || playerPos === 'Forward';
+        return playerPos === positionFilter;
+      });
     }
 
     // Apply search filter
@@ -118,11 +126,39 @@ const PlayersTable = () => {
 
   const getPositionColor = (position) => {
     switch (position) {
-      case 'Goalkeeper': return 'bg-yellow-500';
-      case 'Defender': return 'bg-blue-500';
-      case 'Midfielder': return 'bg-green-500';
-      case 'Forward': return 'bg-red-500';
-      default: return 'bg-gray-500';
+      case 'GKP':
+      case 'Goalkeeper':
+        return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/50';
+      case 'DEF':
+      case 'Defender':
+        return 'bg-red-500/20 text-red-400 border-red-500/50'; // Kırmızı İstendi
+      case 'MID':
+      case 'Midfielder':
+        return 'bg-blue-500/20 text-blue-400 border-blue-500/50';
+      case 'FWD':
+      case 'Forward':
+        return 'bg-green-500/20 text-green-400 border-green-500/50';
+      default:
+        return 'bg-gray-500/20 text-gray-400';
+    }
+  };
+
+  const getPositionBadgeStyle = (position) => {
+    switch (position) {
+      case 'GKP':
+      case 'Goalkeeper':
+        return 'bg-yellow-500/20 text-yellow-400';
+      case 'DEF':
+      case 'Defender':
+        return 'bg-red-500/20 text-red-400'; // User requested red for DEF
+      case 'MID':
+      case 'Midfielder':
+        return 'bg-blue-500/20 text-blue-400';
+      case 'FWD':
+      case 'Forward':
+        return 'bg-green-500/20 text-green-400';
+      default:
+        return 'bg-gray-500/20 text-gray-400';
     }
   };
 
@@ -206,10 +242,10 @@ const PlayersTable = () => {
             className="px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           >
             <option value="all">All Positions</option>
-            <option value="Goalkeeper">Goalkeeper</option>
-            <option value="Defender">Defender</option>
-            <option value="Midfielder">Midfielder</option>
-            <option value="Forward">Forward</option>
+            <option value="GKP">Goalkeeper (GKP)</option>
+            <option value="DEF">Defender (DEF)</option>
+            <option value="MID">Midfielder (MID)</option>
+            <option value="FWD">Forward (FWD)</option>
           </select>
 
           {/* Reset Filters */}
@@ -229,16 +265,16 @@ const PlayersTable = () => {
       <div className="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead className="bg-slate-700">
+            <thead className="bg-slate-800">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">
+                <th className="px-6 py-4 text-left text-xs font-bold text-slate-300 uppercase tracking-wider">
                   Player
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">
+                <th className="px-6 py-4 text-left text-xs font-bold text-slate-300 uppercase tracking-wider">
                   Team
                 </th>
                 <th
-                  className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider cursor-pointer hover:text-white"
+                  className="px-6 py-4 text-left text-xs font-bold text-slate-300 uppercase tracking-wider cursor-pointer hover:bg-slate-700"
                   onClick={() => handleSort('position')}
                 >
                   <div className="flex items-center space-x-1">
@@ -247,7 +283,7 @@ const PlayersTable = () => {
                   </div>
                 </th>
                 <th
-                  className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider cursor-pointer hover:text-white"
+                  className="px-6 py-4 text-left text-xs font-bold text-slate-300 uppercase tracking-wider cursor-pointer hover:bg-slate-700"
                   onClick={() => handleSort('price')}
                 >
                   <div className="flex items-center space-x-1">
@@ -256,7 +292,7 @@ const PlayersTable = () => {
                   </div>
                 </th>
                 <th
-                  className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider cursor-pointer hover:text-white"
+                  className="px-6 py-4 text-left text-xs font-bold text-slate-300 uppercase tracking-wider cursor-pointer hover:bg-slate-700"
                   onClick={() => handleSort('predicted_xP')}
                 >
                   <div className="flex items-center space-x-1">
@@ -265,7 +301,7 @@ const PlayersTable = () => {
                   </div>
                 </th>
                 <th
-                  className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider cursor-pointer hover:text-white"
+                  className="px-6 py-4 text-left text-xs font-bold text-slate-300 uppercase tracking-wider cursor-pointer hover:bg-slate-700"
                   onClick={() => handleSort('form')}
                 >
                   <div className="flex items-center space-x-1">
@@ -281,15 +317,44 @@ const PlayersTable = () => {
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center">
                       <div className="flex-shrink-0 h-10 w-10">
-                        <div className={`h-10 w-10 rounded-full ${getPositionColor(player.position)} flex items-center justify-center text-white font-bold text-xs`}>
+                        {player.photo ? (
+                          <img
+                            src={`https://resources.premierleague.com/premierleague/photos/players/110x140/p${player.photo.replace('.jpg', '')}.png`}
+                            alt={player.name}
+                            className="h-10 w-10 rounded-full object-cover mr-3"
+                            onError={(e) => {
+                              // Fallback to position-colored circle with initial
+                              e.target.style.display = 'none';
+                              e.target.nextSibling.style.display = 'flex';
+                            }}
+                          />
+                        ) : null}
+                        <div
+                          className={`h-10 w-10 rounded-full ${getPositionColor(player.position)} flex items-center justify-center text-white font-bold text-xs mr-3`}
+                          style={{ display: player.photo ? 'none' : 'flex' }}
+                        >
                           {player.name.charAt(0)}
                         </div>
                       </div>
-                      <div className="ml-4">
-                        <div className="text-sm font-medium text-white">{player.name}</div>
-                        <div className="text-sm text-slate-400">
-                          {player.status === 'a' ? 'Available' : player.status === 'i' ? 'Injured' : 'Unavailable'}
+                      <div className="flex items-center">
+                        <div className="flex items-center space-x-2">
+                          <div className="text-sm font-medium text-white">{player.name}</div>
+                          {/* Injury Status */}
+                          {player.chance_of_playing !== undefined && player.chance_of_playing < 100 && (
+                            <div className="flex items-center space-x-1">
+                              {player.chance_of_playing === 0 ? (
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-400">
+                                  Injured
+                                </span>
+                              ) : (
+                                <div className="flex items-center text-yellow-400" title={`Injury risk: ${player.chance_of_playing}%`}>
+                                  <AlertCircle className="h-3 w-3" />
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
+                        <div className="text-xs text-gray-400">{player.team_name}</div>
                       </div>
                     </div>
                   </td>
@@ -297,12 +362,7 @@ const PlayersTable = () => {
                     <div className="text-sm text-white">{player.team_name}</div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
-                      player.position === 'Goalkeeper' ? 'bg-yellow-500/20 text-yellow-400' :
-                      player.position === 'Defender' ? 'bg-blue-500/20 text-blue-400' :
-                      player.position === 'Midfielder' ? 'bg-green-500/20 text-green-400' :
-                      'bg-red-500/20 text-red-400'
-                    }`}>
+                    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getPositionBadgeStyle(player.position)}`}>
                       {player.position}
                     </span>
                   </td>
@@ -324,7 +384,7 @@ const PlayersTable = () => {
                       (player.form || 0) >= 3 ? 'bg-yellow-500/20 text-yellow-400' :
                       'bg-red-500/20 text-red-400'
                     }`}>
-                      {(player.form || 0).toFixed(1)}
+                      {(player.form || 0) > 0 ? (player.form || 0).toFixed(1) : '-'}
                     </span>
                   </td>
                 </tr>

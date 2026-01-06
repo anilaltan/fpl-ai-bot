@@ -1,0 +1,455 @@
+"""
+FPL Dream Team Solver using Linear Programming
+
+This module provides optimization algorithms for Fantasy Premier League team selection
+using PuLP (Python Linear Programming) library.
+"""
+
+import logging
+from typing import List, Dict, Any, Optional
+from pulp import LpProblem, LpVariable, LpMaximize, LpStatus, lpSum, LpBinary
+
+logger = logging.getLogger(__name__)
+
+
+def solve_dream_team(players: List[Dict[str, Any]], budget: float = 100.0, max_players_per_team: int = 3) -> List[Dict[str, Any]]:
+    """
+    Solve FPL dream team optimization using linear programming.
+
+    Selects 15 players that maximize total predicted_xP while respecting all FPL constraints.
+
+    Args:
+        players: List of player dictionaries with keys: id, name, team_name, position, price, predicted_xP
+        budget: Maximum total cost allowed (default: 100.0)
+
+    Returns:
+        List of selected players (15 players) or empty list if no solution found
+
+    Constraints:
+        - Total players: exactly 15
+        - Budget: total price <= budget
+        - Goalkeepers: exactly 2
+        - Defenders: exactly 5
+        - Midfielders: exactly 5
+        - Forwards: exactly 3
+        - Max 3 players from same team
+        - Objective: maximize sum(predicted_xP)
+    """
+    try:
+        logger.info(f"Starting dream team optimization with {len(players)} players, budget: £{budget}M")
+
+        if len(players) < 15:
+            logger.warning(f"Not enough players: {len(players)} < 15")
+            return []
+
+        # Data validation and cleaning
+        logger.info("Validating and cleaning player data...")
+
+        # Check sample player for data format issues
+        if players:
+            sample_player = players[0]
+            logger.info(f"Sample player data: ID={sample_player.get('id')}, "
+                       f"Name={sample_player.get('name')}, "
+                       f"Price={sample_player.get('price')}, "
+                       f"Position={sample_player.get('position')}, "
+                       f"Predicted_xP={sample_player.get('predicted_xP')}")
+
+        # Clean and prepare player data
+        cleaned_players = []
+        for player in players:
+            try:
+                # Extract and validate data with better None handling
+                player_id = player.get('id')
+                name = str(player.get('name', '')).strip()
+                team_name = str(player.get('team_name', '')).strip() if player.get('team_name') else ''
+                position = str(player.get('position', '')).strip()
+                price = player.get('price')
+                predicted_xp = player.get('predicted_xP')
+
+                # Handle None values
+                if price is None:
+                    logger.warning(f"Player {name or player_id} has no price, skipping")
+                    continue
+                if predicted_xp is None:
+                    predicted_xp = 0.0  # Default to 0 if no prediction
+                    logger.debug(f"Player {name or player_id} has no predicted_xP, defaulting to 0.0")
+
+                # Convert to proper types
+                try:
+                    price = float(price)
+                    predicted_xp = float(predicted_xp)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid numeric data for {name or player_id}: price={price}, xp={predicted_xp}, skipping")
+                    continue
+
+                # Skip invalid players
+                if not player_id or not name or price <= 0:
+                    continue
+
+                # CRITICAL FIX: Handle FPL price units
+                # FPL API returns prices as integers (e.g., 65 for £6.5M)
+                # Convert to float millions if needed
+                if price > 20:  # Likely in API units
+                    price = price / 10.0
+                    logger.debug(f"Converted price for {name}: {player.get('price')} -> {price}")
+
+                # Ensure position is valid (now comes as string: GKP, DEF, MID, FWD)
+                valid_positions = ['GKP', 'DEF', 'MID', 'FWD']
+                if position not in valid_positions:
+                    logger.warning(f"Invalid position '{position}' for player {name}, skipping")
+                    continue
+
+                # Normalize team name - more robust handling
+                normalized_team = team_name.strip() if team_name else ""
+                if not normalized_team or normalized_team.lower() in ['none', 'null', '']:
+                    logger.debug(f"Player {name} has no team name, assigning 'Unknown_Team'")
+                    normalized_team = "Unknown_Team"
+
+                cleaned_player = {
+                    'id': player_id,
+                    'name': name,
+                    'team_name': normalized_team,
+                    'position': position,
+                    'price': float(price),
+                    'predicted_xP': float(predicted_xp)
+                }
+
+                cleaned_players.append(cleaned_player)
+
+            except Exception as e:
+                logger.warning(f"Error cleaning player data: {e}")
+                continue
+
+        if len(cleaned_players) < 15:
+            logger.warning(f"Not enough valid players after cleaning: {len(cleaned_players)} < 15")
+            return []
+
+        logger.info(f"Using {len(cleaned_players)} cleaned players for optimization")
+
+        # Create LP problem
+        prob = LpProblem("FPL_Dream_Team", LpMaximize)
+
+        # Create binary variables for each player (1 if selected, 0 otherwise)
+        player_vars = {}
+        for player in cleaned_players:
+            player_id = player['id']
+            player_vars[player_id] = LpVariable(f"player_{player_id}", cat=LpBinary)
+
+        # Objective function: maximize total xp
+        prob += lpSum([
+            player_vars[player_id] * player['xp']
+            for player in cleaned_players
+            if player['id'] in player_vars
+        ]), "Total_xP"
+
+        # Constraint 1: Exactly 15 players
+        prob += lpSum(player_vars.values()) == 15, "Total_Players_15"
+
+        # Constraint 2: Budget limit
+        prob += lpSum([
+            player_vars[player_id] * player['price']
+            for player in cleaned_players
+            if player['id'] in player_vars
+        ]) <= budget, f"Budget_Limit_{budget}"
+
+        # Constraint 3: Position constraints
+        # Count players by position for debugging
+        position_counts = {
+            1: sum(1 for p in cleaned_players if p['position'] == 1),  # GK
+            2: sum(1 for p in cleaned_players if p['position'] == 2),  # DEF
+            3: sum(1 for p in cleaned_players if p['position'] == 3),  # MID
+            4: sum(1 for p in cleaned_players if p['position'] == 4)   # FWD
+        }
+        logger.info(f"Position distribution: GK={position_counts[1]}, DEF={position_counts[2]}, MID={position_counts[3]}, FWD={position_counts[4]}")
+
+        # Goalkeepers: exactly 2
+        gk_vars = [player_vars[player_id] for player in cleaned_players
+                  if player['id'] in player_vars and player['position'] == 1]
+        if len(gk_vars) < 2:
+            logger.error(f"Not enough goalkeepers: {len(gk_vars)} < 2 required")
+        prob += lpSum(gk_vars) == 2, "Goalkeepers_2"
+
+        # Defenders: exactly 5
+        def_vars = [player_vars[player_id] for player in cleaned_players
+                   if player['id'] in player_vars and player['position'] == 2]
+        if len(def_vars) < 5:
+            logger.error(f"Not enough defenders: {len(def_vars)} < 5 required")
+        prob += lpSum(def_vars) == 5, "Defenders_5"
+
+        # Midfielders: exactly 5
+        mid_vars = [player_vars[player_id] for player in cleaned_players
+                   if player['id'] in player_vars and player['position'] == 3]
+        if len(mid_vars) < 5:
+            logger.error(f"Not enough midfielders: {len(mid_vars)} < 5 required")
+        prob += lpSum(mid_vars) == 5, "Midfielders_5"
+
+        # Forwards: exactly 3
+        fwd_vars = [player_vars[player_id] for player in cleaned_players
+                   if player['id'] in player_vars and player['position'] == 4]
+        if len(fwd_vars) < 3:
+            logger.error(f"Not enough forwards: {len(fwd_vars)} < 3 required")
+        prob += lpSum(fwd_vars) == 3, "Forwards_3"
+
+        # Constraint 4: Max 3 players from same team
+        team_names = set(player['team_name'] for player in cleaned_players if player['team_name'])
+        logger.info(f"Unique teams found: {len(team_names)} teams - {sorted(list(team_names))[:5]}...")
+
+        if len(team_names) < 2:
+            logger.warning(f"Only {len(team_names)} unique teams found. This might cause infeasibility.")
+            logger.warning(f"Team distribution: {[(t, sum(1 for p in cleaned_players if p['team_name'] == t)) for t in team_names]}")
+
+        for team_name in team_names:
+            if team_name and team_name.strip() and team_name != "Unknown_Team":  # Skip Unknown team
+                team_players = [
+                    player_vars[player_id]
+                    for player in cleaned_players
+                    if player['id'] in player_vars and player['team_name'] == team_name
+                ]
+                if len(team_players) > max_players_per_team:  # Only add constraint if team has more than limit
+                    prob += lpSum(team_players) <= max_players_per_team, f"Team_{team_name.replace(' ', '_').replace('-', '_')}_Max_{max_players_per_team}"
+                    logger.debug(f"Added team constraint for '{team_name}': {len(team_players)} players (max {max_players_per_team})")
+                else:
+                    logger.debug(f"Skipped team constraint for '{team_name}': only {len(team_players)} players (limit {max_players_per_team})")
+
+        # Solve the problem
+        logger.info("Solving linear programming problem...")
+        status = prob.solve()
+
+        if LpStatus[status] != 'Optimal':
+            logger.error(f"Solver failed to find optimal solution. Status: {LpStatus[status]} ({status})")
+
+            # Log additional debug info
+            logger.error(f"Problem details: {len(cleaned_players)} players, budget £{budget}M")
+
+            # Check budget feasibility
+            cheapest_15 = sorted(cleaned_players, key=lambda x: x['price'])[:15]
+            total_budget_needed = sum(p['price'] for p in cheapest_15)
+            logger.error(f"Minimum budget needed for cheapest 15 players: £{total_budget_needed:.1f}M")
+
+            # Check if budget is sufficient
+            if total_budget_needed > budget:
+                logger.error(f"BUDGET INSUFFICIENT: Need £{total_budget_needed:.1f}M, have £{budget}M")
+            else:
+                logger.error("Budget seems sufficient, constraint violation likely")
+
+            # Check team distribution for potential issues
+            team_dist = {}
+            for player in cheapest_15:
+                team = player['team_name']
+                team_dist[team] = team_dist.get(team, 0) + 1
+
+            max_team_players = max(team_dist.values()) if team_dist else 0
+            if max_team_players > 3:
+                logger.error(f"TEAM CONSTRAINT VIOLATION in cheapest selection: {max_team_players} players from same team")
+
+            return []
+
+        # Extract selected players
+        selected_players = []
+        total_cost = 0.0
+        total_xp = 0.0
+
+        for player in cleaned_players:
+            player_id = player['id']
+            if player_id in player_vars and player_vars[player_id].value() == 1:
+                selected_players.append(player)
+                total_cost += player['price']
+                total_xp += player['xp']
+
+        logger.info("✅ Dream team optimization completed!")
+        logger.info(f"   Selected {len(selected_players)} players")
+        logger.info(f"   Total cost: £{total_cost:.1f}M")
+        logger.info(f"   Total xp: {total_xp:.1f}")
+        logger.info(f"   Budget used: {total_cost/budget*100:.1f}%")
+
+        # Position breakdown
+        positions = {}
+        for player in selected_players:
+            pos = player.get('position', 'Unknown')
+            positions[pos] = positions.get(pos, 0) + 1
+
+        logger.info(f"   Position breakdown: {positions}")
+
+        # Log team distribution of selected players
+        team_dist = {}
+        for player in selected_players:
+            team = player['team_name']
+            team_dist[team] = team_dist.get(team, 0) + 1
+
+        logger.info(f"   Team distribution: {team_dist}")
+        max_team = max(team_dist.values()) if team_dist else 0
+        logger.info(f"   Max players from any team: {max_team} (limit: {max_players_per_team})")
+
+        return selected_players
+
+    except Exception as e:
+        logger.error(f"❌ Dream team optimization failed: {e}")
+        return []
+
+
+def solve_dream_team_with_retry(players: List[Dict[str, Any]], budget: float = 100.0) -> Dict[str, Any]:
+    """
+    Solve dream team with enhanced debugging and fallback mechanisms.
+
+    Args:
+        players: List of player dictionaries
+        budget: Maximum total cost allowed
+
+    Returns:
+        Dict with status and players:
+        - {"status": "optimal", "players": [...]} for successful solution
+        - {"status": "fallback", "players": [...]} for top players fallback
+        - {"status": "failed", "players": []} if completely impossible
+    """
+    logger.info(f"🧪 Starting dream team optimization (budget: £{budget}M)")
+
+    # Enhanced data analysis before solving
+    if not players:
+        logger.error("❌ No players data provided")
+        return {"status": "failed", "players": []}
+
+    # Analyze player data
+    position_counts = {'GKP': 0, 'DEF': 0, 'MID': 0, 'FWD': 0}
+    team_counts = {}
+    prices = []
+    xp_values = []
+
+    for p in players:
+        pos = p.get('position', '')
+        team = p.get('team', '')
+        price = p.get('price', 0)
+        xp = p.get('xp', 0)
+
+        if pos in position_counts:
+            position_counts[pos] += 1
+        if team:
+            team_counts[team] = team_counts.get(team, 0) + 1
+        if price > 0:
+            prices.append(price)
+        if xp > 0:
+            xp_values.append(xp)
+
+    logger.info(f"📊 Data Analysis:")
+    logger.info(f"   Total players: {len(players)}")
+    logger.info(f"   Position distribution: {position_counts}")
+    logger.info(f"   Unique teams: {len(team_counts)}")
+    logger.info(f"   Price range: £{min(prices):.1f}M - £{max(prices):.1f}M (avg: £{sum(prices)/len(prices):.1f}M)")
+    logger.info(f"   XP range: {min(xp_values):.1f} - {max(xp_values):.1f} (avg: {sum(xp_values)/len(xp_values):.1f})")
+
+    # Check minimum requirements
+    min_gkp = position_counts.get('GKP', 0) >= 2
+    min_def = position_counts.get('DEF', 0) >= 5
+    min_mid = position_counts.get('MID', 0) >= 5
+    min_fwd = position_counts.get('FWD', 0) >= 3
+
+    logger.info(f"📋 Minimum requirements met: GKP≥2:{min_gkp}, DEF≥5:{min_def}, MID≥5:{min_mid}, FWD≥3:{min_fwd}")
+
+    if not (min_gkp and min_def and min_mid and min_fwd):
+        logger.error("❌ Insufficient players for minimum position requirements")
+        return {"status": "failed", "players": []}
+
+    # Attempt 1: Strict FPL rules (max 3 per team)
+    logger.info("🎯 Attempt 1: Using strict FPL rules (max 3 players per team)")
+    result = solve_dream_team(players, budget, max_players_per_team=3)
+
+    if result and len(result) == 15:
+        logger.info("✅ Strict rules successful!")
+        return {"status": "optimal", "players": result}
+
+    # Attempt 2: Relaxed team constraints (max 5 per team)
+    logger.warning("⚠️  Strict rules failed. Attempt 2: Relaxed constraints (max 5 per team)")
+    result = solve_dream_team(players, budget, max_players_per_team=5)
+
+    if result and len(result) == 15:
+        logger.info("✅ Relaxed rules successful!")
+        return {"status": "optimal", "players": result}
+
+    # Attempt 3: No team constraints at all
+    logger.warning("⚠️  Relaxed rules failed. Attempt 3: No team constraints (max 15 per team)")
+    result = solve_dream_team(players, budget, max_players_per_team=15)
+
+    if result and len(result) == 15:
+        logger.info("✅ No team constraints successful!")
+        return {"status": "optimal", "players": result}
+
+    # FALLBACK: Return top 15 players by XP regardless of constraints
+    logger.error("❌ All optimization attempts failed. Using fallback: Top 15 by XP")
+
+    try:
+        # Sort by XP descending and take top 15
+        sorted_players = sorted(players, key=lambda x: x.get('xp', 0), reverse=True)
+        fallback_team = sorted_players[:15]
+
+        total_cost = sum(p.get('price', 0) for p in fallback_team)
+        total_xp = sum(p.get('xp', 0) for p in fallback_team)
+
+        logger.info(f"🔄 Fallback team: {len(fallback_team)} players, £{total_cost:.1f}M spent, {total_xp:.1f} XP")
+
+        return {"status": "fallback", "players": fallback_team}
+
+    except Exception as fallback_error:
+        logger.error(f"❌ Even fallback failed: {fallback_error}")
+        return {"status": "failed", "players": []}
+
+
+def validate_team_selection(selected_players: List[Dict[str, Any]], budget: float = 100.0) -> Dict[str, Any]:
+    """
+    Validate that a team selection meets all FPL constraints.
+
+    Args:
+        selected_players: List of selected players
+        budget: Budget limit
+
+    Returns:
+        Dict with validation results
+    """
+    try:
+        if len(selected_players) != 15:
+            return {"valid": False, "error": f"Wrong number of players: {len(selected_players)} != 15"}
+
+        total_cost = sum(player.get('price', 0) for player in selected_players)
+        if total_cost > budget:
+            return {"valid": False, "error": f"Budget exceeded: £{total_cost:.1f}M > £{budget}M"}
+
+        positions = {}
+        teams = {}
+
+        for player in selected_players:
+            # Count positions
+            pos = player.get('position', 'Unknown')
+            positions[pos] = positions.get(pos, 0) + 1
+
+            # Count teams
+            team = player.get('team_name', 'Unknown')
+            teams[team] = teams.get(team, 0) + 1
+
+        # Check position constraints
+        if positions.get('Goalkeeper', 0) != 2:
+            return {"valid": False, "error": f"Goalkeepers: {positions.get('Goalkeeper', 0)} != 2"}
+
+        if positions.get('Defender', 0) != 5:
+            return {"valid": False, "error": f"Defenders: {positions.get('Defender', 0)} != 5"}
+
+        if positions.get('Midfielder', 0) != 5:
+            return {"valid": False, "error": f"Midfielders: {positions.get('Midfielder', 0)} != 5"}
+
+        if positions.get('Forward', 0) != 3:
+            return {"valid": False, "error": f"Forwards: {positions.get('Forward', 0)} != 3"}
+
+        # Check team constraints
+        max_team_players = max(teams.values()) if teams else 0
+        if max_team_players > 3:
+            return {"valid": False, "error": f"Team constraint violated: max {max_team_players} players from one team"}
+
+        total_xp = sum(player.get('predicted_xP', 0) for player in selected_players)
+
+        return {
+            "valid": True,
+            "total_cost": round(total_cost, 2),
+            "total_xp": round(total_xp, 2),
+            "positions": positions,
+            "teams": teams
+        }
+
+    except Exception as e:
+        return {"valid": False, "error": f"Validation error: {str(e)}"}
